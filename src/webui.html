@@ -1,0 +1,979 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Book Scan Importer — Review</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a20;
+    --panel-2: #1d2129;
+    --border: #262b35;
+    --border-soft: #20242d;
+    --text: #e6e9ef;
+    --muted: #8b93a3;
+    --faint: #5c6474;
+    --accent: #4f8cff;
+    --accent-dim: #2c4a80;
+    --green: #3fb96b;
+    --green-dim: #1e3a2b;
+    --amber: #d9a13c;
+    --amber-dim: #3a2f17;
+    --red: #e0524d;
+    --red-dim: #3a201f;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 24px 32px 96px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  button {
+    font: inherit;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 7px 14px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  button:hover:not(:disabled) { background: #242936; border-color: #333a48; }
+  button:disabled { opacity: 0.45; cursor: not-allowed; }
+  button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+    padding: 10px 22px;
+  }
+  button.primary:hover:not(:disabled) { background: #3d7bf0; border-color: #3d7bf0; }
+  button.ghost { background: transparent; border-color: var(--border); }
+  button.danger { background: var(--red-dim); border-color: #4a2826; color: var(--red); }
+  button.danger:hover:not(:disabled) { background: #472523; border-color: var(--red); }
+  button.small { padding: 4px 10px; font-size: 12.5px; border-radius: 6px; }
+
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding-bottom: 18px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 18px;
+  }
+  .title h1 { font-size: 20px; margin: 0 0 4px; font-weight: 650; letter-spacing: -0.2px; }
+  .folder {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    color: var(--muted);
+    word-break: break-all;
+    max-width: 560px;
+  }
+  .badge {
+    display: inline-block;
+    margin-left: 8px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    color: var(--amber);
+    background: var(--amber-dim);
+    border: 1px solid #5a4620;
+    border-radius: 999px;
+    padding: 2px 10px;
+    vertical-align: 1px;
+  }
+  .head-right { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .pills { display: flex; gap: 8px; flex-wrap: wrap; }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    font-weight: 550;
+    color: var(--muted);
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 4px 12px;
+  }
+  .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+  .pill.ok { color: var(--text); }
+  .pill.ok .dot { background: var(--green); }
+  .pill.bad { color: var(--red); }
+  .pill.bad .dot { background: var(--red); }
+  .pill.warn { color: var(--amber); }
+  .pill.warn .dot { background: var(--amber); }
+
+  .tabs {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+  .tab {
+    background: transparent;
+    border: none;
+    border-radius: 8px 8px 0 0;
+    border-bottom: 2px solid transparent;
+    color: var(--muted);
+    padding: 9px 14px;
+    font-weight: 550;
+  }
+  .tab:hover { color: var(--text); background: transparent; }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tab .count {
+    display: inline-block;
+    min-width: 20px;
+    text-align: center;
+    background: var(--panel-2);
+    border-radius: 999px;
+    padding: 1px 7px;
+    font-size: 11.5px;
+    margin-left: 6px;
+    color: var(--muted);
+  }
+  .tab.active .count { background: var(--accent-dim); color: var(--text); }
+
+  .cards { display: flex; flex-direction: column; gap: 16px; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .card-top {
+    display: grid;
+    grid-template-columns: 400px 1fr;
+    gap: 0;
+  }
+  @media (max-width: 900px) {
+    .card-top { grid-template-columns: 1fr; }
+    .thumbs { flex-direction: row; border-bottom: 1px solid var(--border); }
+  }
+  .thumbs {
+    display: flex;
+    gap: 14px;
+    padding: 18px;
+    background: var(--panel-2);
+    border-right: 1px solid var(--border-soft);
+    align-items: flex-start;
+  }
+  .thumb { width: 180px; flex: none; }
+  .thumb img {
+    width: 180px;
+    height: 240px;
+    object-fit: contain;
+    background: #0b0d10;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    display: block;
+  }
+  .thumb .no-cover {
+    width: 180px;
+    height: 240px;
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--faint);
+    font-size: 12px;
+    text-align: center;
+    padding: 12px;
+  }
+  .thumb .pos {
+    margin-top: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--faint);
+    text-align: center;
+  }
+  .ocr { padding: 18px; min-width: 0; }
+  .ocr h2 {
+    margin: 0 0 2px;
+    font-size: 17px;
+    font-weight: 650;
+    letter-spacing: -0.1px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .ocr .author { color: var(--muted); margin-bottom: 12px; }
+  .meta {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 8px 16px;
+    margin-bottom: 12px;
+  }
+  .meta .k {
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+  .meta .v { font-size: 13.5px; }
+  .meta .v .raw { color: var(--faint); font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .blurb {
+    color: var(--muted);
+    font-size: 13.5px;
+    cursor: pointer;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    margin: 0;
+  }
+  .blurb.expanded { display: block; -webkit-line-clamp: unset; }
+  .blurb-hint { font-size: 11px; color: var(--faint); margin-top: 4px; }
+
+  .status-pill {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    border-radius: 999px;
+    padding: 2px 10px;
+    border: 1px solid;
+  }
+  .status-pill.matched { color: var(--accent); border-color: var(--accent-dim); background: rgba(79, 140, 255, 0.08); }
+  .status-pill.created { color: var(--accent); border-color: var(--accent-dim); background: rgba(79, 140, 255, 0.08); }
+  .status-pill.needs_review { color: var(--amber); border-color: #5a4620; background: var(--amber-dim); }
+  .status-pill.unmatched { color: var(--muted); border-color: var(--border); background: var(--panel-2); }
+  .status-pill.committed { color: var(--green); border-color: #2c5a3e; background: var(--green-dim); }
+  .status-pill.failed { color: var(--red); border-color: #4a2826; background: var(--red-dim); }
+
+  .card-actions {
+    padding: 14px 18px;
+    border-top: 1px solid var(--border-soft);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .action-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .action-row .grow { flex: 1; }
+  .candidates { display: flex; flex-direction: column; gap: 6px; }
+  .candidate {
+    display: grid;
+    grid-template-columns: 28px 1fr auto auto auto;
+    gap: 12px;
+    align-items: center;
+    background: var(--panel-2);
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    padding: 9px 12px;
+  }
+  .candidate.top { border-color: var(--accent-dim); background: rgba(79, 140, 255, 0.06); }
+  .candidate.chosen { border-color: var(--green); background: var(--green-dim); }
+  .rank {
+    width: 26px;
+    height: 26px;
+    border-radius: 7px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--muted);
+  }
+  .candidate.top .rank { color: var(--accent); border-color: var(--accent-dim); }
+  .candidate.chosen .rank { color: var(--green); border-color: var(--green); }
+  .cand-title { font-weight: 600; font-size: 13.5px; }
+  .cand-author { color: var(--muted); font-size: 12.5px; }
+  .mrp { font-size: 13px; font-weight: 650; white-space: nowrap; }
+  .mrp-match {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    color: var(--green);
+    background: var(--green-dim);
+    border: 1px solid #2c5a3e;
+    border-radius: 999px;
+    padding: 2px 8px;
+    white-space: nowrap;
+  }
+  .score { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  .create-form {
+    display: grid;
+    grid-template-columns: 2fr 1.4fr 0.7fr 1.2fr auto;
+    gap: 8px;
+    align-items: end;
+    background: var(--panel-2);
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    padding: 12px;
+  }
+  @media (max-width: 900px) { .create-form { grid-template-columns: 1fr 1fr; } }
+  .create-form label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: var(--faint); }
+  .create-form input {
+    font: inherit;
+    font-size: 13.5px;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 7px 10px;
+  }
+  .create-form input:focus { outline: none; border-color: var(--accent); }
+  .create-label { font-size: 12px; font-weight: 650; color: var(--muted); margin: 0 0 8px; }
+
+  .muted-card { opacity: 0.6; }
+  .dismissed-note { font-size: 12px; color: var(--faint); }
+
+  .failed-item {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 16px;
+  }
+  .failed-item .fname { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; font-weight: 600; }
+  .failed-item .ferr { color: var(--red); font-size: 12.5px; flex: 1; }
+
+  .empty {
+    text-align: center;
+    color: var(--muted);
+    padding: 56px 24px;
+    background: var(--panel);
+    border: 1px dashed var(--border);
+    border-radius: var(--radius);
+  }
+  .empty code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12.5px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 2px 8px;
+    color: var(--text);
+  }
+  .section-head { display: flex; align-items: center; justify-content: space-between; margin: 0 2px 12px; }
+  .section-head h3 { margin: 0; font-size: 13px; font-weight: 650; letter-spacing: 0.3px; text-transform: uppercase; color: var(--muted); }
+
+  .commit-results {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 18px;
+    margin-bottom: 20px;
+  }
+  .commit-results h3 { margin: 0 0 10px; font-size: 14px; }
+  .result-row { display: flex; gap: 10px; align-items: baseline; padding: 5px 0; font-size: 13.5px; border-top: 1px solid var(--border-soft); }
+  .result-row:first-of-type { border-top: none; }
+  .result-row .ok { color: var(--green); font-weight: 700; }
+  .result-row .err { color: var(--red); font-weight: 700; }
+  .result-row .detail { color: var(--muted); font-size: 12.5px; }
+
+  .spinner {
+    display: inline-block;
+    width: 13px;
+    height: 13px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    vertical-align: -2px;
+    margin-right: 7px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .toast {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--red);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 11px 16px;
+    font-size: 13px;
+    max-width: 420px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+    display: none;
+    z-index: 50;
+  }
+  .toast.show { display: block; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="title">
+      <h1>Book Scan Importer <span id="dry-run-badge" class="badge" hidden>dry run</span></h1>
+      <div class="folder" id="folder">loading…</div>
+    </div>
+    <div class="head-right">
+      <div class="pills">
+        <span class="pill" id="pill-llm"><span class="dot"></span><span>LLM …</span></span>
+        <span class="pill" id="pill-db"><span class="dot"></span><span>DB …</span></span>
+        <span class="pill" id="pill-r2"><span class="dot"></span><span>R2 …</span></span>
+      </div>
+      <button class="ghost" id="btn-refresh" type="button">Refresh</button>
+      <button class="primary" id="btn-commit" type="button">Commit to database</button>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs" aria-label="Book states"></nav>
+
+  <section id="commit-results" class="commit-results" hidden></section>
+
+  <main id="content"><div class="empty">Loading…</div></main>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  var state = null;
+  var activeTab = 'matched';
+  var busy = false;
+  var lastUpdated = 0;
+  var refreshQueued = false;
+
+  var TABS = [
+    { id: 'matched', label: 'Matched', match: function (b) { return b.status === 'matched' || b.status === 'created' || b.status === 'committed'; } },
+    { id: 'review', label: 'Review', match: function (b) { return b.status === 'needs_review'; } },
+    { id: 'unmatched', label: 'Unmatched', match: function (b) { return b.status === 'unmatched'; } },
+    { id: 'failed', label: 'Failed', match: null },
+    { id: 'all', label: 'All', match: function () { return true; } }
+  ];
+
+  function h(tag, attrs, children) {
+    var el = document.createElement(tag);
+    if (attrs) {
+      Object.keys(attrs).forEach(function (k) {
+        if (k === 'text') el.textContent = attrs[k];
+        else if (k === 'html') el.innerHTML = attrs[k];
+        else el.setAttribute(k, attrs[k]);
+      });
+    }
+    (children || []).forEach(function (c) {
+      if (c == null) return;
+      el.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+    });
+    return el;
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  function fmtPrice(v) {
+    return v == null ? '—' : '₹' + Number(v).toLocaleString('en-IN');
+  }
+
+  function fmtNum(v) {
+    return v == null ? '' : String(v);
+  }
+
+  function toast(msg) {
+    var t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(t._timer);
+    t._timer = setTimeout(function () { t.classList.remove('show'); }, 6000);
+  }
+
+  function debounceRefresh() {
+    if (refreshQueued) return;
+    refreshQueued = true;
+    setTimeout(function () {
+      refreshQueued = false;
+      loadState();
+    }, 450);
+  }
+
+  async function api(path, opts) {
+    var res = await fetch(path, opts);
+    var data;
+    try { data = await res.json(); } catch (e) { data = {}; }
+    if (!res.ok) {
+      var err = new Error(data.error || ('HTTP ' + res.status));
+      err.status = res.status;
+      throw err;
+    }
+    return data;
+  }
+
+  async function loadState() {
+    try {
+      state = await api('/api/state');
+      lastUpdated = Date.now();
+      render();
+    } catch (e) {
+      var el2 = document.getElementById('content');
+      el2.innerHTML = '';
+      el2.appendChild(h('div', { class: 'empty' }, [
+        h('div', { text: 'Could not load state: ' + e.message }),
+        h('div', { text: 'Check that the importer is running, then press Refresh.' })
+      ]));
+    }
+  }
+
+  function setPill(id, ok, label, warn) {
+    var pill = document.getElementById(id);
+    var dot = pill.querySelector('.dot');
+    pill.className = 'pill ' + (ok ? 'ok' : warn ? 'warn' : 'bad');
+    pill.children[1].textContent = label;
+    void dot;
+  }
+
+  function counts() {
+    var books = state ? state.books : [];
+    var failed = state ? state.images.filter(function (i) { return i.status === 'failed'; }).length : 0;
+    var c = { matched: 0, review: 0, unmatched: 0, all: books.length, failed: failed };
+    books.forEach(function (b) {
+      if (b.status === 'matched' || b.status === 'created' || b.status === 'committed') c.matched++;
+      if (b.status === 'needs_review') c.review++;
+      if (b.status === 'unmatched') c.unmatched++;
+    });
+    return c;
+  }
+
+  function committable() {
+    if (!state) return [];
+    return state.books.filter(function (b) {
+      return (b.chosenProductId || b.createdProductId) && b.status !== 'committed' && !b.dismissed;
+    });
+  }
+
+  function renderHeader() {
+    document.getElementById('folder').textContent = state.folder || 'unknown folder';
+    document.getElementById('dry-run-badge').hidden = !state.dryRun;
+
+    setPill('pill-llm', !!state.lms.ok, state.lms.ok ? 'LLM ' + (state.lms.model || 'ready') : 'LLM offline', false);
+    setPill('pill-db', !!state.db.ok, state.db.ok ? 'DB ok' : 'DB down', false);
+    setPill('pill-r2', !!state.r2.ok, state.r2.ok ? 'R2 ok' : 'R2 missing', true);
+
+    var n = committable().length;
+    var btn = document.getElementById('btn-commit');
+    btn.disabled = busy || state.dryRun || n === 0;
+    btn.textContent = state.dryRun
+      ? 'Commit disabled (dry run)'
+      : n > 0
+        ? 'Commit to database (' + n + ')'
+        : 'Commit to database';
+  }
+
+  function renderTabs() {
+    var c = counts();
+    var nav = document.getElementById('tabs');
+    nav.innerHTML = '';
+    TABS.forEach(function (t) {
+      var n = t.id === 'failed' ? c.failed : c[t.id];
+      var tab = h('button', {
+        class: 'tab' + (activeTab === t.id ? ' active' : ''),
+        type: 'button'
+      }, [
+        t.label,
+        h('span', { class: 'count', text: String(n) })
+      ]);
+      tab.addEventListener('click', function () {
+        activeTab = t.id;
+        renderTabs();
+        renderContent();
+      });
+      nav.appendChild(tab);
+    });
+  }
+
+  function emptyMessage(tab) {
+    var box = h('div', { class: 'empty' });
+    if (tab === 'failed') {
+      box.appendChild(h('div', { text: 'No failed images. Everything processed cleanly.' }));
+      return box;
+    }
+    box.appendChild(h('div', { text: 'No books in this tab.' }));
+    box.appendChild(h('div', { text: 'Run the pipeline first: ' }));
+    var line = h('div', {}, []);
+    line.appendChild(h('code', { text: 'node src/run.mjs ' + (state && state.folder ? state.folder : '<folder>') }));
+    box.appendChild(line);
+    return box;
+  }
+
+  function priceTextFor(book) {
+    var imgs = state.images || {};
+    var front = book.front ? imgs[book.front] : null;
+    var back = book.back ? imgs[book.back] : null;
+    return (front && front.ocr && front.ocr.priceText) || (back && back.ocr && back.ocr.priceText) || '';
+  }
+
+  function positionFor(book, which) {
+    var imgs = state.images || {};
+    var img = which === 'front' ? (book.front ? imgs[book.front] : null) : (book.back ? imgs[book.back] : null);
+    if (img && img.ocr && img.ocr.position) return img.ocr.position;
+    return which;
+  }
+
+  function statusPill(status) {
+    var label = status === 'needs_review' ? 'review' : status;
+    return h('span', { class: 'status-pill ' + status, text: label });
+  }
+
+  function thumbnail(book, which) {
+    var sha = which === 'front' ? book.front : book.back;
+    var fig = h('div', { class: 'thumb' });
+    if (sha) {
+      var img = h('img', { src: '/img/' + sha, alt: which + ' cover of ' + book.title, loading: 'lazy' });
+      img.addEventListener('error', function () {
+        img.outerHTML = '<div class="no-cover">image unavailable</div>';
+      });
+      fig.appendChild(img);
+    } else {
+      fig.appendChild(h('div', { class: 'no-cover', text: 'no back cover' }));
+    }
+    fig.appendChild(h('div', { class: 'pos', text: positionFor(book, which) }));
+    return fig;
+  }
+
+  function candidateRow(book, cand, rank) {
+    var chosen = book.chosenProductId === cand.id;
+    var row = h('div', {
+      class: 'candidate' + (rank === 1 ? ' top' : '') + (chosen ? ' chosen' : '')
+    });
+    row.appendChild(h('div', { class: 'rank', text: String(rank) }));
+    var info = h('div', {}, [
+      h('div', { class: 'cand-title', text: cand.title || '(untitled)' }),
+      h('div', { class: 'cand-author', text: cand.author ? '— ' + cand.author : '' })
+    ]);
+    row.appendChild(info);
+    row.appendChild(h('div', { class: 'mrp', text: fmtPrice(cand.mrp) }));
+    if (cand.mrpMatch) row.appendChild(h('div', { class: 'mrp-match', text: 'MRP-MATCH' }));
+    else row.appendChild(h('div', { class: 'score', text: 'score ' + cand.score }));
+    var action;
+    if (chosen) {
+      action = h('span', { class: 'status-pill committed', text: 'chosen' });
+    } else {
+      action = h('button', { class: 'small', type: 'button', text: 'Pick' });
+      action.addEventListener('click', function () {
+        pickCandidate(book, cand);
+      });
+    }
+    row.appendChild(action);
+    return row;
+  }
+
+  function candidatesSection(book) {
+    var wrap = h('div', {}, []);
+    wrap.appendChild(h('div', { class: 'create-label', text: 'Candidates' }));
+    var list = h('div', { class: 'candidates' });
+    book.candidates.slice(0, 5).forEach(function (cand, i) {
+      list.appendChild(candidateRow(book, cand, i + 1));
+    });
+    wrap.appendChild(list);
+    return wrap;
+  }
+
+  function createForm(book) {
+    var form = h('form', { class: 'create-form' });
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      createProduct(book, form);
+    });
+    function field(name, value, ph) {
+      var input = h('input', { name: name, type: 'text', value: value == null ? '' : String(value), placeholder: ph || '' });
+      return h('label', {}, [h('span', { text: name }), input]);
+    }
+    form.appendChild(field('title', book.title, 'Book title'));
+    form.appendChild(field('author', book.author, 'Author'));
+    form.appendChild(field('mrp', book.price, 'MRP in ₹'));
+    form.appendChild(field('isbn', book.isbn, 'ISBN'));
+    var btn = h('button', { type: 'submit', text: busy ? 'Creating…' : 'Create & use' });
+    btn.disabled = busy;
+    form.appendChild(btn);
+    return form;
+  }
+
+  function bookCard(book) {
+    var card = h('article', { class: 'card' + (book.dismissed ? ' muted-card' : '') });
+
+    var top = h('div', { class: 'card-top' });
+    var thumbs = h('div', { class: 'thumbs' });
+    thumbs.appendChild(thumbnail(book, 'front'));
+    thumbs.appendChild(thumbnail(book, 'back'));
+    top.appendChild(thumbs);
+
+    var ocr = h('div', { class: 'ocr' });
+    var title = h('div', {}, []);
+    var h2 = h('h2');
+    h2.appendChild(h('span', { text: book.title || '(untitled)' }));
+    h2.appendChild(statusPill(book.status));
+    if (book.score) h2.appendChild(h('span', { class: 'score', text: 'score ' + book.score }));
+    title.appendChild(h2);
+    ocr.appendChild(title);
+    ocr.appendChild(h('div', { class: 'author', text: book.author || '' }));
+
+    var meta = h('div', { class: 'meta' });
+    var priceCell = h('div', {}, [
+      h('div', { class: 'k', text: 'Price' }),
+      h('div', { class: 'v' })
+    ]);
+    priceCell.children[1].appendChild(h('span', { text: fmtPrice(book.price) }));
+    var raw = priceTextFor(book);
+    if (raw) priceCell.children[1].appendChild(h('span', { class: 'raw', text: '  (' + raw + ')' }));
+    meta.appendChild(priceCell);
+    meta.appendChild(h('div', {}, [
+      h('div', { class: 'k', text: 'ISBN' }),
+      h('div', { class: 'v', text: book.isbn || '—' })
+    ]));
+    if (book.chosenProductId) meta.appendChild(h('div', {}, [
+      h('div', { class: 'k', text: 'Matched product' }),
+      h('div', { class: 'v', text: book.chosenProductId })
+    ]));
+    if (book.createdProductId) meta.appendChild(h('div', {}, [
+      h('div', { class: 'k', text: 'Created product' }),
+      h('div', { class: 'v', text: book.createdProductId })
+    ]));
+    ocr.appendChild(meta);
+
+    if (book.blurb) {
+      var p = h('p', { class: 'blurb', text: book.blurb });
+      p.addEventListener('click', function () { p.classList.toggle('expanded'); });
+      ocr.appendChild(p);
+      ocr.appendChild(h('div', { class: 'blurb-hint', text: 'click to expand' }));
+    }
+    top.appendChild(ocr);
+    card.appendChild(top);
+
+    var actions = h('div', { class: 'card-actions' });
+
+    if (book.status === 'committed' && book.urls) {
+      var urls = book.urls;
+      var links = h('div', { class: 'action-row' });
+      links.appendChild(h('span', { class: 'status-pill committed', text: 'in database' }));
+      if (urls.frontCard) links.appendChild(h('a', { href: urls.frontCard, target: '_blank', rel: 'noopener', text: 'front card' }));
+      if (urls.frontDetail) links.appendChild(h('a', { href: urls.frontDetail, target: '_blank', rel: 'noopener', text: 'front detail' }));
+      if (urls.backCard) links.appendChild(h('a', { href: urls.backCard, target: '_blank', rel: 'noopener', text: 'back card' }));
+      if (urls.backDetail) links.appendChild(h('a', { href: urls.backDetail, target: '_blank', rel: 'noopener', text: 'back detail' }));
+      actions.appendChild(links);
+    }
+
+    if (book.status !== 'committed' && !book.dismissed) {
+      if (book.candidates && book.candidates.length > 0) actions.appendChild(candidatesSection(book));
+      if ((!book.candidates || book.candidates.length === 0) || book.status === 'unmatched') {
+        actions.appendChild(h('div', { class: 'create-label', text: 'Create new product' }));
+        actions.appendChild(createForm(book));
+      }
+      var row = h('div', { class: 'action-row' });
+      if (book.matchReason) row.appendChild(h('span', { class: 'dismissed-note', text: book.matchReason }));
+      row.appendChild(h('span', { class: 'grow' }));
+      var reject = h('button', { class: 'danger small', type: 'button', text: 'Reject' });
+      reject.addEventListener('click', function () { dismiss(book); });
+      row.appendChild(reject);
+      actions.appendChild(row);
+    }
+
+    if (book.dismissed) {
+      var drow = h('div', { class: 'action-row' });
+      drow.appendChild(h('span', { class: 'dismissed-note', text: 'Dismissed — hidden from commit.' }));
+      drow.appendChild(h('span', { class: 'grow' }));
+      var undo = h('button', { class: 'small', type: 'button', text: 'Undo dismiss' });
+      undo.addEventListener('click', function () { undoDismiss(book); });
+      drow.appendChild(undo);
+      actions.appendChild(drow);
+    }
+
+    if (book.commitError) {
+      actions.appendChild(h('div', { class: 'dismissed-note', text: 'Commit error: ' + book.commitError, style: 'color: var(--red);' }));
+    }
+
+    card.appendChild(actions);
+    return card;
+  }
+
+  function renderContent() {
+    var box = document.getElementById('content');
+    box.innerHTML = '';
+    if (!state) return;
+
+    if (activeTab === 'failed') {
+      var failed = state.images.filter(function (i) { return i.status === 'failed'; });
+      if (failed.length === 0) {
+        box.appendChild(emptyMessage('failed'));
+        return;
+      }
+      var head = h('div', { class: 'section-head' }, [
+        h('h3', { text: 'Failed images (' + failed.length + ')' })
+      ]);
+      var retry = h('button', { type: 'button', text: busy ? 'Retrying…' : 'Retry all' });
+      retry.disabled = busy;
+      retry.addEventListener('click', retryFailed);
+      head.appendChild(retry);
+      box.appendChild(head);
+      var list = h('div', { class: 'cards' });
+      failed.forEach(function (img) {
+        list.appendChild(h('div', { class: 'failed-item' }, [
+          h('span', { class: 'fname', text: img.file || img.sha }),
+          h('span', { class: 'ferr', text: img.error || 'unknown error' }),
+          h('span', { class: 'score', text: img.sha ? img.sha.slice(0, 12) : '' })
+        ]));
+      });
+      box.appendChild(list);
+      return;
+    }
+
+    var tab = TABS.find(function (t) { return t.id === activeTab; });
+    var books = state.books.filter(tab.match);
+    if (books.length === 0) {
+      box.appendChild(emptyMessage(activeTab));
+      return;
+    }
+
+    var main = books.filter(function (b) { return !b.dismissed; });
+    var dismissed = books.filter(function (b) { return b.dismissed; });
+    var list = h('div', { class: 'cards' });
+    main.forEach(function (b) { list.appendChild(bookCard(b)); });
+    box.appendChild(list);
+
+    if (dismissed.length > 0) {
+      var dhead = h('div', { class: 'section-head', style: 'margin-top: 20px;' }, [
+        h('h3', { text: 'Dismissed (' + dismissed.length + ')' })
+      ]);
+      box.appendChild(dhead);
+      var dlist = h('div', { class: 'cards' });
+      dismissed.forEach(function (b) { dlist.appendChild(bookCard(b)); });
+      box.appendChild(dlist);
+    }
+  }
+
+  function render() {
+    if (!state) return;
+    renderHeader();
+    renderTabs();
+    renderContent();
+  }
+
+  async function withBusy(fn) {
+    if (busy) return;
+    busy = true;
+    render();
+    try {
+      await fn();
+    } catch (e) {
+      toast(e.message || String(e));
+    } finally {
+      busy = false;
+      debounceRefresh();
+    }
+  }
+
+  async function pickCandidate(book, cand) {
+    await withBusy(async function () {
+      var key = encodeURIComponent(book.key);
+      await api('/api/book/' + key + '/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ productId: cand.id })
+      });
+    });
+  }
+
+  async function dismiss(book) {
+    await withBusy(async function () {
+      var key = encodeURIComponent(book.key);
+      await api('/api/book/' + key + '/dismiss', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+    });
+  }
+
+  async function undoDismiss(book) {
+    await withBusy(async function () {
+      var key = encodeURIComponent(book.key);
+      await api('/api/book/' + key + '/dismiss', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ undo: true })
+      });
+    });
+  }
+
+  async function createProduct(book, form) {
+    await withBusy(async function () {
+      var data = {};
+      ['title', 'author', 'mrp', 'isbn'].forEach(function (n) {
+        data[n] = form.elements[n].value.trim();
+      });
+      if (data.mrp === '') data.mrp = null;
+      var key = encodeURIComponent(book.key);
+      await api('/api/book/' + key + '/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+    });
+  }
+
+  async function retryFailed() {
+    await withBusy(async function () {
+      await api('/api/retry', { method: 'POST' });
+    });
+  }
+
+  function renderCommitResults(results) {
+    var box = document.getElementById('commit-results');
+    box.innerHTML = '';
+    box.hidden = false;
+    var okCount = results.filter(function (r) { return !r.error; }).length;
+    box.appendChild(h('h3', { text: 'Commit results — ' + okCount + ' succeeded, ' + (results.length - okCount) + ' failed' }));
+    results.forEach(function (r) {
+      var row = h('div', { class: 'result-row' });
+      var book = state.books[r.key];
+      row.appendChild(h('span', { class: r.error ? 'err' : 'ok', text: r.error ? '✗' : '✓' }));
+      row.appendChild(h('span', { text: (book && book.title) || r.key }));
+      if (r.error) row.appendChild(h('span', { class: 'detail', text: r.error }));
+      box.appendChild(row);
+    });
+  }
+
+  async function commitAll() {
+    await withBusy(async function () {
+      var data = await api('/api/commit', { method: 'POST' });
+      renderCommitResults(data.results || []);
+    });
+  }
+
+  document.getElementById('btn-commit').addEventListener('click', commitAll);
+  document.getElementById('btn-refresh').addEventListener('click', function () {
+    loadState();
+  });
+
+  setInterval(function () {
+    if (document.visibilityState === 'visible' && !busy) loadState();
+  }, 8000);
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible' && !busy && Date.now() - lastUpdated > 2000) loadState();
+  });
+
+  loadState();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "name": "book-scan-importer",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "start": "node src/run.mjs",
+    "web": "node src/web.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3",
+    "dotenv": "^16",
+    "pg": "^8",
+    "sharp": "^0.33"
+  },
+  "devDependencies": {
+    "vitest": "^2"
+  }
+}
