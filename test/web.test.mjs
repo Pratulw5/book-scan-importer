@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { startServer } from '../src/web.mjs'
+import { resetProgress, startProgress, endProgress } from '../src/progress.mjs'
 
 const SHA = 'a'.repeat(64)
 const FAILED_SHA = 'b'.repeat(64)
@@ -273,5 +274,45 @@ describe('web.mjs', () => {
       body: JSON.stringify({}),
     })
     expect(res.status).toBe(409)
+  })
+
+  describe('progress reporting', () => {
+    afterEach(() => {
+      resetProgress()
+    })
+
+    it('GET /api/progress → { progress: null } when nothing has run', async () => {
+      const res = await fetch(`${base}/api/progress`)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ progress: null })
+    })
+
+    it('GET /api/progress exposes the running phase for the UI progress bar', async () => {
+      const progress = startProgress({ label: '/tmp/fake-books', phase: 'crop', total: 2 })
+      progress.step()
+
+      const res = await fetch(`${base}/api/progress`)
+      const body = await res.json()
+      expect(body.progress.phase).toBe('crop')
+      expect(body.progress.phaseLabel).toBe('Analyzing image')
+      expect(body.progress.total).toBe(2)
+      expect(body.progress.current).toBe(1)
+      expect(body.progress.fraction).toBe(0.5)
+      expect(body.progress.done).toBe(false)
+    })
+
+    it('GET /api/state carries the same progress snapshot', async () => {
+      const progress = startProgress({ label: '/tmp/fake-books', phase: 'commit', total: 1 })
+      progress.log('committed "The Alpha Book" → prod-1')
+      endProgress(progress, '1/1 committed')
+
+      const res = await fetch(`${base}/api/state`)
+      const body = await res.json()
+      expect(body.progress.phase).toBe('commit')
+      expect(body.progress.done).toBe(true)
+      expect(body.progress.fraction).toBe(1)
+      expect(body.progress.summary).toBe('1/1 committed')
+      expect(body.progress.events).toHaveLength(1)
+    })
   })
 })

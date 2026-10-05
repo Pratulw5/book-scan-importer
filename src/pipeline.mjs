@@ -4,14 +4,25 @@ import { sha256, cropWhiteBg, safeName } from './image.mjs'
 import { listModels, visionExtract } from './llm.mjs'
 import { normalize, parsePrice, isValidIsbn, rankBooks, decide, decideUnavailable } from './match.mjs'
 import { fetchProducts } from './db.mjs'
+import { startProgress, endProgress } from './progress.mjs'
 
 const IMAGE_EXT = /\.(jpe?g|png|webp|heic)$/i
 
 export function discoverImages(folder) {
-  return fs
-    .readdirSync(folder)
-    .filter((f) => IMAGE_EXT.test(f) && fs.statSync(path.join(folder, f)).isFile())
-    .sort()
+  const files = []
+
+  function walk(dir, prefix = '') {
+    const entries = fs.readdirSync(dir, { withFileTypes: true })
+    for (const entry of entries) {
+      const rel = path.join(prefix, entry.name)
+      const abs = path.join(dir, entry.name)
+      if (entry.isDirectory()) walk(abs, rel)
+      else if (entry.isFile() && IMAGE_EXT.test(entry.name)) files.push(rel)
+    }
+  }
+
+  walk(folder)
+  return files.sort()
 }
 
 export function rebuildBooks(state, files) {
@@ -68,19 +79,24 @@ export function rebuildBooks(state, files) {
   }
 }
 
-export async function matchBooks(state, { dryRun }) {
+export async function matchBooks(state, { dryRun, progress = null } = {}) {
   let products = null
   if (!dryRun) {
+    if (progress) progress.start('match', { total: 0, message: 'loading catalogue' })
     try {
       products = await fetchProducts()
     } catch (e) {
       products = null
-      console.error(`database unavailable, matching disabled: ${e.message}`)
+      console.error(`catalogue unavailable, matching disabled: ${e.message}`)
     }
   }
-  for (const key of Object.keys(state.books)) {
+  const keys = Object.keys(state.books).filter(
+    (key) => state.books[key].status !== 'committed' && state.books[key].status !== 'created',
+  )
+  if (progress) progress.start('match', { total: keys.length })
+  for (const key of keys) {
     const book = state.books[key]
-    if (book.status === 'committed' || book.status === 'created') continue
+    if (progress) progress.setMessage(book.title || key)
     if (dryRun || products === null) {
       const d = decideUnavailable()
       state.setBook(key, { status: d.status, score: d.score, matchReason: d.reason, candidates: [] })
@@ -89,16 +105,31 @@ export async function matchBooks(state, { dryRun }) {
       const d = decide(candidates, book)
       state.setBook(key, { status: d.status, score: d.score, matchReason: d.reason, candidates })
     }
+    if (progress) progress.advance()
   }
 }
 
-export async function orchestrate({ folder, dryRun = false, limit = 0, state, retryFailed = false }) {
+export async function orchestrate({ folder, dryRun = false, limit = 0, state, retryFailed = false, progress: given = null }) {
+  const progress = given ?? startProgress({ label: folder, phase: 'discover', total: 0 })
+  let result = null
+  try {
+    result = await run({ folder, dryRun, limit, state, retryFailed, progress })
+    return result
+  } finally {
+    if (!given) {
+      endProgress(progress, result ? `${result.processed} processed, ${result.failed} failed` : 'stopped')
+    }
+  }
+}
+
+async function run({ folder, dryRun, limit, state, retryFailed, progress }) {
   if (state.folder && state.folder !== folder) {
     throw new Error('state belongs to another folder; use --force')
   }
   state.folder = folder
   state.dryRun = dryRun
 
+  progress.start('discover', { total: 0, message: folder })
   const files = discoverImages(folder)
   const cropsDir = path.join(state.jobDir, 'crops')
 
@@ -111,6 +142,8 @@ export async function orchestrate({ folder, dryRun = false, limit = 0, state, re
     if (!entry || entry.path !== abs) {
       entry = state.addImage(sha, { file, path: abs, status: 'pending' })
     }
+    progress.setMessage(file)
+    progress.advance()
     if (entry.status === 'ocr_done' || entry.status === 'committed') continue
     if (entry.status === 'failed') {
       if (!retryFailed) continue
@@ -118,6 +151,7 @@ export async function orchestrate({ folder, dryRun = false, limit = 0, state, re
     }
     work.push({ file, abs, buf, entry })
   }
+  progress.start('discover', { total: files.length })
 
   if (limit > 0) work.length = Math.min(work.length, limit)
 
@@ -125,8 +159,14 @@ export async function orchestrate({ folder, dryRun = false, limit = 0, state, re
   let failed = 0
 
   if (work.length > 0) {
+    progress.schedule([
+      { phase: 'crop', total: work.length },
+      { phase: 'ocr', total: work.length },
+      { phase: 'match', total: 0 },
+    ])
     let model = null
     try {
+      progress.start('crop', { total: work.length, message: 'loading vision model' })
       model = await listModels()
     } catch (e) {
       console.error(`model discovery failed: ${e.message}`)
@@ -134,12 +174,14 @@ export async function orchestrate({ folder, dryRun = false, limit = 0, state, re
     for (let i = 0; i < work.length; i++) {
       const { file, buf, entry } = work[i]
       const label = `[${i + 1}/${work.length}] ${file}`
+      progress.start('crop', { total: work.length, message: file })
       if (!model) {
         const error = `ocr: ${'no vision model available'}`
         state.setImage(entry.sha, { status: 'failed', error })
         state.save()
         failed++
-        console.log(`${label} → FAILED ${error}`)
+        progress.log(`${label} → FAILED ${error}`)
+        progress.step({ ok: false })
         continue
       }
       let cropBuf
@@ -155,7 +197,8 @@ export async function orchestrate({ folder, dryRun = false, limit = 0, state, re
         state.setImage(entry.sha, { status: 'failed', error })
         state.save()
         failed++
-        console.log(`${label} → FAILED ${error}`)
+        progress.log(`${label} → FAILED ${error}`)
+        progress.step({ ok: false })
         continue
       }
       try {
@@ -163,15 +206,18 @@ export async function orchestrate({ folder, dryRun = false, limit = 0, state, re
         fs.writeFileSync(path.join(cropsDir, `${entry.sha}.jpg`), cropBuf)
         state.setImage(entry.sha, { status: 'cropped', dims: { width, height }, error: null })
         state.save()
+        progress.step()
       } catch (e) {
         const error = `crop: ${e.message}`
         state.setImage(entry.sha, { status: 'failed', error })
         state.save()
         failed++
-        console.log(`${label} → FAILED ${error}`)
+        progress.log(`${label} → FAILED ${error}`)
+        progress.step({ ok: false })
         continue
       }
       try {
+        progress.start('ocr', { total: work.length, message: `${file} → ${model}` })
         const ocr = await visionExtract({ imageBuf: cropBuf, model })
         const isbn = isValidIsbn(ocr.isbn) ? ocr.isbn : ''
         const price = parsePrice(ocr.priceText)
@@ -182,21 +228,26 @@ export async function orchestrate({ folder, dryRun = false, limit = 0, state, re
         })
         state.save()
         processed++
-        console.log(
+        progress.log(
           `${label} → cropped ${width}x${height} → ${ocr.position ?? 'unknown'} "${ocr.title}" ${price != null ? `₹${price}` : 'no-price'} ${isbn ? 'isbn-ok' : 'no-isbn'}`,
         )
+        progress.step()
       } catch (e) {
         const error = `ocr: ${e.message}`
         state.setImage(entry.sha, { status: 'failed', error })
         state.save()
         failed++
-        console.log(`${label} → FAILED ${error}`)
+        progress.log(`${label} → FAILED ${error}`)
+        progress.step({ ok: false })
       }
     }
+  } else {
+    progress.schedule([{ phase: 'match', total: 0 }])
   }
 
   rebuildBooks(state, files)
-  await matchBooks(state, { dryRun })
+  progress.start('match', { total: 0, message: 'grouping books' })
+  await matchBooks(state, { dryRun, progress })
   state.save()
 
   return { processed, failed, books: state.books }

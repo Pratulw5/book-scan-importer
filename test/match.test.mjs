@@ -135,6 +135,25 @@ describe('scoreCandidate', () => {
       scoreCandidate({ title: 'T', author: '', mrp: 1 }, { title: 'T', author: 'Doe', price: null }).authorMatch,
     ).toBe(false)
   })
+
+  it('matches when the AI swapped title and author', () => {
+    const r = scoreCandidate(
+      { title: 'Jane Doe', author: 'The Great Book', mrp: 499, isbn: '9780306406157' },
+      book,
+    )
+    expect(r.swapped).toBe(true)
+    expect(r.titleScore).toBe(100)
+    expect(r.authorMatch).toBe(true)
+    expect(r.score).toBe(180)
+  })
+
+  it('does not flag a swap when direct fields already match', () => {
+    const r = scoreCandidate(
+      { title: 'The Great Book', author: 'Jane Doe', mrp: 499, isbn: '9780306406157' },
+      book,
+    )
+    expect(r.swapped).toBe(false)
+  })
 })
 
 describe('rankBooks', () => {
@@ -163,6 +182,14 @@ describe('rankBooks', () => {
     expect(typeof c.titleScore).toBe('number')
     expect(typeof c.mrpMatch).toBe('boolean')
     expect(typeof c.authorMatch).toBe('boolean')
+    expect(typeof c.swapped).toBe('boolean')
+  })
+
+  it('ranks a swapped-fields product first when AI swapped them', () => {
+    const swappedBook = { title: 'Jane Doe', author: 'The Great Book', isbn: '', price: 499 }
+    const ranked = rankBooks(products, swappedBook)
+    expect(ranked[0].id).toBe('p0')
+    expect(ranked[0].swapped).toBe(true)
   })
 
   it('empty product list gives empty ranking', () => {

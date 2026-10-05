@@ -4,6 +4,7 @@ import { loadConfig } from './config.mjs'
 import { JobState } from './state.mjs'
 import { discoverImages, orchestrate } from './pipeline.mjs'
 import { closePool } from './db.mjs'
+import { attachConsoleRenderer } from './progress.mjs'
 
 function usage() {
   console.error('usage: node src/run.mjs <folder> [--dry-run] [--limit N] [--force] [--web]')
@@ -99,7 +100,7 @@ async function main() {
     process.exit(1)
   }
 
-  const { ok, errors, config } = loadConfig({ needLlm: true, needDb: !args.dryRun, needR2: false })
+  const { ok, errors, config } = loadConfig({ needLlm: true, needDb: false, needR2: false })
   if (!ok) {
     console.error('Missing required configuration:')
     for (const e of errors) console.error(`  - ${e}`)
@@ -125,13 +126,19 @@ async function main() {
     }
   }
 
-  const result = await orchestrate({
-    folder,
-    dryRun: args.dryRun,
-    limit: args.limit,
-    state,
-    retryFailed: false,
-  })
+  const detachProgress = attachConsoleRenderer()
+  let result
+  try {
+    result = await orchestrate({
+      folder,
+      dryRun: args.dryRun,
+      limit: args.limit,
+      state,
+      retryFailed: false,
+    })
+  } finally {
+    detachProgress()
+  }
 
   printSummary(result, state, folder)
   if (args.web) {

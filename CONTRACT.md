@@ -36,7 +36,7 @@ book-scan-importer/
 | --- | --- | --- |
 | `LMSTUDIO_HOST` | `http://127.0.0.1:1234` | LM Studio OpenAI-compatible server |
 | `LMSTUDIO_MODEL` | *(empty → auto-pick first from `/v1/models`)* | vision model id |
-| `DATABASE_URL` | *(required for matching/commit)* | Neon Postgres, same as main repo |
+| `DATABASE_URL` | *(required for commit only)* | Neon Postgres, same as main repo. Matching reads `data/products.json`. |
 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` (`products`), `R2_PUBLIC_URL` | *(required for commit)* | Cloudflare R2 |
 | `WEB_PORT` | `4173` | UI port |
 
@@ -164,16 +164,24 @@ Crop file written to `job/crops/<sha>.jpg` (displayed by UI, sent to LLM).
 - `putIfMissing(key, body)` → HeadObject; on 404/NotFound Put with `ContentType: image/webp`, `CacheControl: public, max-age=31536000, immutable`.
 - `publicUrl(key)` = `${R2_PUBLIC_URL.replace(/\/$/, "")}/${key}`
 
-## DB (`db.mjs`) — `pg` Pool, parameterised SQL only
+## Catalogue snapshot — matching never queries the database
 
-- `fetchProducts()` → `SELECT id, title, author, mrp, "ISBN", images, thumbnails, orientation FROM products` (arrays as JS arrays via pg).
+- `data/products.json` is the committed source of truth for matching:
+  `{ fetchedAt, count, products: [{ id, title, author, mrp, isbn }] }`.
+- Regenerate with `node scripts/snapshot-products.mjs` (the only code that reads the `products` table wholesale).
+- `fetchProducts()` reads and memoises that file — no pool, no network. Missing/corrupt file throws and all books fall back to `needs_review`.
+- `DATABASE_URL` is needed only at commit time, not to match.
+
+## DB (`db.mjs`) — `pg` Pool, parameterised SQL only. Commit path only.
+
+- `fetchProducts()` → reads `data/products.json` (see above). **No SQL.**
 - `commitBook({ productId, newImages, newThumbnails, isbn, orientation: 'portrait' })`:
   - read current row, merge: `images = dedup([...newImages, ...existing])` — new URLs FIRST (front cover first), thumbnails aligned by same index pair order.
   - `UPDATE products SET images = $1, thumbnails = $2, "ISBN" = COALESCE("ISBN", $3) WHERE id = $4`
 - `createProduct({ title, author, mrp, isbn, images, thumbnails })` →
   `INSERT INTO products (title, author, mrp, "ISBN", images, thumbnails, stock, "isActive", genre) VALUES (...) RETURNING id`
   (stock 0, isActive true, genre `[]`, `type` null)
-- Pool: `new pg.Pool({ connectionString, max: 2, idleTimeoutMillis: 30000 })`; `close()` exported.
+- Pool: `new pg.Pool({ connectionString, max: 2, idleTimeoutMillis: 30000 })`; opened lazily on the first write only; `close()` exported.
 
 ## Web UI (`web.mjs`, port WEB_PORT default 4173)
 

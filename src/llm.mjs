@@ -1,21 +1,15 @@
-const SYSTEM_PROMPT = `You are reading a photo of a book cover (front or back) scanned on white paper.
-Respond with ONLY a JSON object, no markdown fences:
-{"position":"front"|"back"|"unknown","title":"","author":"","isbn":"","priceText":"","blurb":""}
-Rules:
-- "front" = cover shows the main title / cover art. Badges like "Bestseller" may appear on front.
-- "back" = shows a blurb/description paragraph, barcodes, or an ISBN number strip.
-- "title": main book title, "" if not visible. "author": author name, "" if not visible.
-- "isbn": digits only (10 or 13, no dashes), "" if not visible.
-- "priceText": any printed price EXACTLY as shown (e.g. "₹499"), "" if none.
-- "blurb": back-cover description, at most 2 sentences, "" if none.`
+const SYSTEM_PROMPT = `You are a book cover OCR JSON API. Output exactly one valid JSON object and nothing else. No markdown. No explanations. Use empty strings for unknown fields. Required keys: position (front|back|unknown), title, author, isbn (digits only), priceText, blurb (max 2 sentences).`
+
+const JSON_FORMATTER_PROMPT = `You convert messy OCR or image descriptions into strict JSON. Output exactly one valid JSON object and nothing else. No markdown. No explanations. Use empty strings for unknown fields. Required keys: position (front|back|unknown), title, author, isbn (digits only), priceText, blurb (max 2 sentences).`
 
 export function extractJson(text) {
   if (typeof text !== 'string') throw new Error('LLM response is not a string')
   const start = text.indexOf('{')
-  if (start === -1) throw new Error('no JSON object in LLM response')
+  if (start === -1) throw new Error(`no JSON object in LLM response: ${text.slice(0, 200)}`)
   let depth = 0
   let inString = false
   let escaped = false
+  let lastError = null
   for (let i = start; i < text.length; i++) {
     const ch = text[i]
     if (inString) {
@@ -34,7 +28,13 @@ export function extractJson(text) {
       }
     }
   }
-  throw new Error('unbalanced braces in LLM response')
+  const repaired = text.slice(start).trim() + '}'.repeat(Math.max(depth, 0))
+  try {
+    return JSON.parse(repaired)
+  } catch (e) {
+    lastError = e
+  }
+  throw new Error(`unbalanced braces in LLM response: ${text.slice(0, 200)}${lastError ? ` (${lastError.message})` : ''}`)
 }
 
 function normalizeExtract(obj) {
@@ -50,8 +50,39 @@ function normalizeExtract(obj) {
   }
 }
 
+function extractFromProse(text) {
+  const s = String(text || '').replace(/\s+/g, ' ').trim()
+  const title =
+    s.match(/book cover for\s+["“]([^"”]+)["”]/i)?.[1] ||
+    s.match(/cover of\s+["“]([^"”]+)["”]/i)?.[1] ||
+    s.match(/titled\s+["“]([^"”]+)["”]/i)?.[1] ||
+    s.match(/["“]([^"”]{3,120})["”]\s+by\s+([^.,;]+)/i)?.[1] ||
+    ''
+  const author =
+    s.match(/["“][^"”]+["”]\s+by\s+([^.,;]+)/i)?.[1] ||
+    s.match(/author(?: is|:)?\s+([^.,;]+)/i)?.[1] ||
+    ''
+  const isbn = s.match(/(?:ISBN(?:-1[03])?[:\s-]*)?(97[89][\d\s-]{10,}|[\d\s-]{9}[\dXx])/i)?.[1]
+  const priceText = s.match(/(?:₹|Rs\.?|INR)\s*\d+(?:\.\d+)?/i)?.[0] || ''
+  return normalizeExtract({
+    position: /back cover/i.test(s) ? 'back' : /front cover|book cover/i.test(s) ? 'front' : 'unknown',
+    title,
+    author,
+    isbn: isbn ? isbn.replace(/[\s-]/g, '') : '',
+    priceText,
+    blurb: s.split(/(?<=[.!?])\s+/).slice(0, 2).join(' '),
+  })
+}
+
 function hasUseful(parsed) {
   return parsed && typeof parsed === 'object' && typeof parsed.title === 'string' && parsed.title.length > 0
+}
+
+function contentToText(content) {
+  if (Array.isArray(content)) {
+    return content.map(part => typeof part?.text === 'string' ? part.text : '').join('\n')
+  }
+  return content ?? ''
 }
 
 export async function listModels({ host, model } = {}) {
@@ -66,46 +97,114 @@ export async function listModels({ host, model } = {}) {
   return first
 }
 
-async function callOnce({ host, model, imageBuf }) {
+async function callOnce({ host, model, imageBuf, instruction, jsonMode = true }) {
   const h = (host || process.env.LMSTUDIO_HOST || 'http://127.0.0.1:1234').replace(/\/$/, '')
+  const payload = {
+    model,
+    temperature: 0.0,
+    max_tokens: 500,
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: instruction },
+          {
+            type: 'image_url',
+            image_url: { url: `data:image/jpeg;base64,${imageBuf.toString('base64')}` },
+          },
+        ],
+      },
+    ],
+  }
+  if (jsonMode) payload.response_format = { type: 'json_object' }
+
   const res = await fetch(`${h}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model,
-      temperature: 0.1,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: 'Read this book cover photo and answer with JSON only.' },
-            {
-              type: 'image_url',
-              image_url: { url: `data:image/jpeg;base64,${imageBuf.toString('base64')}` },
-            },
-          ],
-        },
-      ],
-    }),
+    body: JSON.stringify(payload),
   })
   if (!res.ok) {
     const body = await res.text().catch(() => '')
+    if (jsonMode && (res.status === 400 || res.status === 422)) {
+      return callOnce({ host, model, imageBuf, instruction, jsonMode: false })
+    }
     throw new Error(`LM Studio /v1/chat/completions HTTP ${res.status}: ${body.slice(0, 200)}`)
   }
   const json = await res.json()
-  return json.choices?.[0]?.message?.content ?? ''
+  return contentToText(json.choices?.[0]?.message?.content)
+}
+
+async function callJsonFormatter({ host, model, text, jsonMode = true }) {
+  const h = (host || process.env.LMSTUDIO_HOST || 'http://127.0.0.1:1234').replace(/\/$/, '')
+  const payload = {
+    model,
+    temperature: 0.0,
+    max_tokens: 500,
+    messages: [
+      { role: 'system', content: JSON_FORMATTER_PROMPT },
+      {
+        role: 'user',
+        content: `Convert this OCR/image-description text into the required JSON schema. Return only JSON.\n\nTEXT:\n${text}`,
+      },
+    ],
+  }
+  if (jsonMode) payload.response_format = { type: 'json_object' }
+
+  const res = await fetch(`${h}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    if (jsonMode && (res.status === 400 || res.status === 422)) {
+      return callJsonFormatter({ host, model, text, jsonMode: false })
+    }
+    throw new Error(`LM Studio JSON formatter HTTP ${res.status}: ${body.slice(0, 200)}`)
+  }
+  const json = await res.json()
+  return contentToText(json.choices?.[0]?.message?.content)
+}
+
+async function extractViaTextModel({ text, host, model }) {
+  const formatted = await callJsonFormatter({ host, model, text })
+  const parsed = extractJson(formatted)
+  if (!hasUseful(parsed)) throw new Error(`JSON formatter returned unusable JSON: ${String(formatted).slice(0, 200)}`)
+  return normalizeExtract(parsed)
 }
 
 export async function visionExtract({ imageBuf, model, host } = {}) {
   if (!model) throw new Error('model not specified — call listModels() first')
   let lastError
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const textModel = process.env.LMSTUDIO_TEXT_MODEL || model
+  const instructions = [
+    'Analyze this book cover image. Return ONLY a JSON object like {"position":"front","title":"","author":"","isbn":"","priceText":"","blurb":""}. Do not include any text outside JSON.',
+    'Retry. Your previous response was invalid. Return exactly one JSON object and nothing else. If you cannot read a field, use an empty string. Do not apologize or explain.',
+  ]
+  for (let attempt = 0; attempt < instructions.length; attempt++) {
     try {
-      const text = await callOnce({ host, model, imageBuf })
-      const parsed = extractJson(text)
-      if (!hasUseful(parsed)) throw new Error(`LLM returned unusable JSON: ${String(text).slice(0, 200)}`)
-      return normalizeExtract(parsed)
+      const text = await callOnce({ host, model, imageBuf, instruction: instructions[attempt] })
+      let parseError
+      try {
+        const parsed = extractJson(text)
+        if (!hasUseful(parsed)) throw new Error(`LLM returned unusable JSON: ${String(text).slice(0, 200)}`)
+        return normalizeExtract(parsed)
+      } catch (e) {
+        parseError = e
+      }
+      try {
+        return await extractViaTextModel({ text, host, model: textModel })
+      } catch (e) {
+        parseError = new Error(`${parseError?.message ?? parseError}; JSON formatter failed: ${e.message}`)
+      }
+      try {
+        const prose = extractFromProse(text)
+        if (hasUseful(prose)) return prose
+      } catch {
+        // Fall through to the detailed parse error.
+      }
+      throw parseError
     } catch (e) {
       lastError = e
     }

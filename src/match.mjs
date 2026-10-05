@@ -64,12 +64,14 @@ export function isValidIsbn(isbn) {
   return false
 }
 
-export function scoreCandidate(product, book) {
-  const ts = titleScore(product.title, book.title)
+function scoreFields(product, book, swap) {
+  const productTitle = swap ? product.author : product.title
+  const productAuthor = swap ? product.title : product.author
+  const ts = titleScore(productTitle, book.title)
   const bookPrice = book.price
   const mrpMatch = bookPrice != null && Number(product.mrp) === bookPrice
   const mrpScore = bookPrice == null ? 8 : mrpMatch ? 40 : 0
-  const na = normalize(product.author)
+  const na = normalize(productAuthor)
   const nb = normalize(book.author)
   const authorMatch = na.length > 0 && nb.length > 0 && (na.includes(nb) || nb.includes(na))
   const authorScore = authorMatch ? 15 : 0
@@ -86,6 +88,13 @@ export function scoreCandidate(product, book) {
   }
 }
 
+export function scoreCandidate(product, book) {
+  const direct = scoreFields(product, book, false)
+  const swapped = scoreFields(product, book, true)
+  const useSwap = swapped.score > direct.score
+  return { ...(useSwap ? swapped : direct), swapped: useSwap }
+}
+
 export function rankBooks(products, book) {
   return (products ?? [])
     .map((p) => {
@@ -100,6 +109,7 @@ export function rankBooks(products, book) {
         titleScore: Math.round(r.titleScore * 100) / 100,
         mrpMatch: r.mrpMatch,
         authorMatch: r.authorMatch,
+        swapped: r.swapped,
       }
     })
     .sort((a, b) => b.score - a.score)
@@ -108,6 +118,7 @@ export function rankBooks(products, book) {
 
 function describe(best) {
   const parts = [`score ${best.score}: title ${Math.round(best.titleScore)}`]
+  if (best.swapped) parts.push('title/author appear swapped')
   if (best.mrpMatch) parts.push('mrp exact')
   if (best.authorMatch) parts.push('author match')
   return parts.join(' + ')

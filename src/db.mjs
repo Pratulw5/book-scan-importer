@@ -1,7 +1,12 @@
+import fs from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import pg from 'pg'
 import { loadConfig } from './config.mjs'
 
+const CATALOGUE_PATH = fileURLToPath(new URL('../data/products.json', import.meta.url))
+
 let pool = null
+let catalogue = null
 
 export function getPool() {
   if (!pool) {
@@ -23,20 +28,39 @@ export async function closePool() {
   }
 }
 
+/**
+ * Matching reads the committed catalogue snapshot in data/products.json and
+ * never touches the database. The pool is only opened by the commit write
+ * path (commitBook / createProduct).
+ */
+export function catalogueStatus() {
+  if (!catalogue) return null
+  return {
+    rows: catalogue.rows.length,
+    fetchedAt: catalogue.fetchedAt,
+    source: 'snapshot',
+    path: CATALOGUE_PATH,
+  }
+}
+
 export async function fetchProducts() {
-  // products has no orientation column in the live schema
-  const { rows } = await getPool().query(
-    `SELECT id, title, author, mrp, "ISBN", images, thumbnails FROM products`,
-  )
-  return rows.map((r) => ({
-    id: r.id,
-    title: r.title,
-    author: r.author,
-    mrp: r.mrp,
-    isbn: r['ISBN'] ?? '',
-    images: r.images ?? [],
-    thumbnails: r.thumbnails ?? [],
-  }))
+  if (catalogue) return catalogue.rows
+  if (!fs.existsSync(CATALOGUE_PATH)) {
+    throw new Error(
+      `catalogue snapshot missing at ${CATALOGUE_PATH} — run scripts/snapshot-products.mjs to generate it`,
+    )
+  }
+  let raw
+  try {
+    raw = JSON.parse(fs.readFileSync(CATALOGUE_PATH, 'utf8'))
+  } catch (e) {
+    throw new Error(`catalogue snapshot is unreadable at ${CATALOGUE_PATH}: ${e.message}`)
+  }
+  if (!Array.isArray(raw?.products)) {
+    throw new Error(`catalogue snapshot has no "products" array at ${CATALOGUE_PATH}`)
+  }
+  catalogue = { rows: raw.products, fetchedAt: raw.fetchedAt ?? null }
+  return catalogue.rows
 }
 
 function mergePairs(newImages, newThumbnails, oldImages, oldThumbnails) {

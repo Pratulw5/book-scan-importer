@@ -270,7 +270,7 @@
   .candidates { display: flex; flex-direction: column; gap: 6px; }
   .candidate {
     display: grid;
-    grid-template-columns: 28px 1fr auto auto auto;
+    grid-template-columns: 28px 1fr auto auto auto auto;
     gap: 12px;
     align-items: center;
     background: var(--panel-2);
@@ -333,6 +333,25 @@
     padding: 7px 10px;
   }
   .create-form input:focus { outline: none; border-color: var(--accent); }
+  .folder-input-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .folder-input-row input {
+    font: inherit;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 8px 10px;
+    min-width: 0;
+  }
+  .folder-input-row input:focus { outline: none; border-color: var(--accent); }
+  @media (max-width: 700px) { .folder-input-row { grid-template-columns: 1fr; } }
   .create-label { font-size: 12px; font-weight: 650; color: var(--muted); margin: 0 0 8px; }
 
   .muted-card { opacity: 0.6; }
@@ -397,6 +416,85 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
 
+  .progress {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 18px;
+    margin-bottom: 18px;
+  }
+  .progress-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .progress-phase { font-weight: 650; font-size: 14px; }
+  .progress-count {
+    color: var(--muted);
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  .progress-label {
+    color: var(--faint);
+    font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 280px;
+  }
+  .progress-grow { flex: 1; }
+  .progress-x {
+    background: transparent;
+    border: none;
+    color: var(--faint);
+    cursor: pointer;
+    font-size: 17px;
+    line-height: 1;
+    padding: 0 4px;
+  }
+  .progress-x:hover { color: var(--text); background: transparent; }
+  .progress-bar {
+    height: 8px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    overflow: hidden;
+    margin: 10px 0 8px;
+  }
+  .progress-bar .fill {
+    height: 100%;
+    width: 0;
+    background: linear-gradient(90deg, var(--accent-dim), var(--accent));
+    transition: width 0.25s ease;
+  }
+  .progress-bar.done .fill { background: linear-gradient(90deg, var(--green-dim), var(--green)); }
+  .progress-bar.busy .fill { animation: pulse 1.1s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+  .progress-msg {
+    font-size: 12.5px;
+    color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    word-break: break-all;
+    min-height: 19px;
+  }
+  .progress-events {
+    list-style: none;
+    margin: 10px 0 0;
+    padding: 8px 0 0;
+    border-top: 1px solid var(--border-soft);
+    max-height: 176px;
+    overflow-y: auto;
+  }
+  .progress-events li {
+    font-size: 12.5px;
+    color: var(--muted);
+    padding: 2px 0;
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+  }
+  .progress-events li .mark { color: var(--green); flex: none; font-weight: 700; }
+  .progress-events li.error { color: var(--red); }
+  .progress-events li.error .mark { color: var(--red); }
+  .progress-events .more { color: var(--faint); font-style: italic; }
+
   .toast {
     position: fixed;
     bottom: 20px;
@@ -429,10 +527,47 @@
         <span class="pill" id="pill-db"><span class="dot"></span><span>DB …</span></span>
         <span class="pill" id="pill-r2"><span class="dot"></span><span>R2 …</span></span>
       </div>
+      <button class="ghost" id="btn-change-folder" type="button">Select image folder</button>
       <button class="ghost" id="btn-refresh" type="button">Refresh</button>
       <button class="primary" id="btn-commit" type="button">Commit to database</button>
     </div>
   </header>
+
+  <section id="progress" class="progress" hidden>
+    <div class="progress-head">
+      <span class="spinner" id="progress-spinner"></span>
+      <span class="progress-phase" id="progress-phase">Working</span>
+      <span class="progress-count" id="progress-count"></span>
+      <span class="progress-grow"></span>
+      <span class="progress-label" id="progress-label"></span>
+      <button class="progress-x" id="progress-dismiss" type="button" title="Hide progress">&times;</button>
+    </div>
+    <div class="progress-bar" id="progress-bar"><div class="fill" id="progress-fill"></div></div>
+    <div class="progress-msg" id="progress-msg"></div>
+    <ul class="progress-events" id="progress-events" hidden></ul>
+  </section>
+
+  <section id="folder-picker" hidden>
+    <div class="card" style="max-width: 800px; margin: 0 auto;">
+      <div class="section-head">
+        <h3>Select folder containing book scans</h3>
+      </div>
+      <div style="padding: 18px;">
+        <div class="folder-input-row">
+          <input id="folder-path-input" type="text" placeholder="Paste folder path, e.g. /Users/.../Scans">
+          <button class="ghost" id="btn-open-path" type="button">Open path</button>
+          <button class="primary" id="btn-start-path" type="button">Process path</button>
+        </div>
+        <div style="margin-bottom: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--muted); word-break: break-all;" id="browser-path"></div>
+        <div id="browser-dirs" style="display: flex; flex-direction: column; gap: 6px;"></div>
+        <div id="browser-empty" class="empty" hidden>No subfolders here.</div>
+        <div class="action-row" style="margin-top: 16px; justify-content: flex-end;">
+          <button class="primary" id="btn-start-here" type="button" hidden>Start processing here</button>
+          <button class="ghost" id="btn-go-up" type="button">Go up</button>
+        </div>
+      </div>
+    </div>
+  </section>
 
   <nav class="tabs" id="tabs" aria-label="Book states"></nav>
 
@@ -451,6 +586,12 @@
   var busy = false;
   var lastUpdated = 0;
   var refreshQueued = false;
+  var browserPath = null;
+  var choosingFolder = false;
+  var progressTimer = null;
+  var progressDismissed = false;
+  var progressId = null;
+  var progressBusy = false;
 
   var TABS = [
     { id: 'matched', label: 'Matched', match: function (b) { return b.status === 'matched' || b.status === 'created' || b.status === 'committed'; } },
@@ -507,6 +648,101 @@
     }, 450);
   }
 
+  function fmtDuration(ms) {
+    if (ms == null || !isFinite(ms)) return '';
+    var sec = Math.max(0, Math.round(ms / 1000));
+    if (sec < 60) return sec + 's';
+    var min = Math.floor(sec / 60);
+    var rem = sec % 60;
+    if (min < 60) return min + 'm ' + rem + 's';
+    return Math.floor(min / 60) + 'h ' + (min % 60) + 'm';
+  }
+
+  function renderProgress(p) {
+    var box = document.getElementById('progress');
+    if (!p || progressDismissed) {
+      box.hidden = true;
+      progressId = p ? p.id : null;
+      return;
+    }
+    box.hidden = false;
+    if (progressId !== p.id) {
+      progressId = p.id;
+      document.getElementById('progress-events').innerHTML = '';
+    }
+
+    var indeterminate = p.fraction == null && !p.done;
+    document.getElementById('progress-spinner').style.display = p.done ? 'none' : '';
+    document.getElementById('progress-phase').textContent = p.done ? 'Finished' : p.phaseLabel;
+
+    var bits = [];
+    if (p.total > 0) bits.push(p.current + '/' + p.total);
+    bits.push(p.succeeded + ' ok');
+    if (p.failed) bits.push(p.failed + ' failed');
+    if (p.done) bits.push('took ' + fmtDuration(p.elapsedMs));
+    else if (p.etaMs != null) bits.push('eta ' + fmtDuration(p.etaMs));
+    document.getElementById('progress-count').textContent = bits.join('  ·  ');
+
+    document.getElementById('progress-label').textContent = p.label || '';
+
+    var bar = document.getElementById('progress-bar');
+    bar.className = 'progress-bar' + (p.done ? ' done' : indeterminate ? ' busy' : '');
+    var pct = indeterminate ? 100 : Math.round((p.fraction != null ? p.fraction : p.overallFraction || 0) * 100);
+    document.getElementById('progress-fill').style.width = pct + '%';
+
+    var msg = p.done && p.summary ? p.summary : p.message;
+    document.getElementById('progress-msg').textContent = msg || '';
+
+    var ev = document.getElementById('progress-events');
+    var events = p.events || [];
+    if (events.length === 0) {
+      ev.hidden = true;
+      return;
+    }
+    ev.hidden = false;
+    ev.innerHTML = '';
+    var shown = events.slice(-12).reverse();
+    shown.forEach(function (e) {
+      ev.appendChild(h('li', { class: e.level === 'error' ? 'error' : '' }, [
+        h('span', { class: 'mark', text: e.level === 'error' ? '✗' : '✓' }),
+        h('span', { text: e.message })
+      ]));
+    });
+    if (events.length > shown.length) {
+      ev.appendChild(h('li', { class: 'more', text: '+' + (events.length - shown.length) + ' earlier' }));
+    }
+  }
+
+  function stopProgressPolling() {
+    if (progressTimer) {
+      clearInterval(progressTimer);
+      progressTimer = null;
+    }
+    progressBusy = false;
+  }
+
+  async function pollProgress() {
+    try {
+      var data = await api('/api/progress');
+      progressBusy = Boolean(data.progress && !data.progress.done);
+      renderProgress(data.progress);
+    } catch (e) {
+      if (!progressTimer) progressBusy = false;
+    }
+  }
+
+  function startProgressPolling() {
+    stopProgressPolling();
+    progressDismissed = false;
+    pollProgress();
+    progressTimer = setInterval(pollProgress, 400);
+  }
+
+  function finishProgressPolling() {
+    stopProgressPolling();
+    setTimeout(pollProgress, 300);
+  }
+
   async function api(path, opts) {
     var res = await fetch(path, opts);
     var data;
@@ -523,7 +759,14 @@
     try {
       state = await api('/api/state');
       lastUpdated = Date.now();
-      render();
+      if (state.folder && !choosingFolder) {
+        document.getElementById('folder-picker').hidden = true;
+        render();
+      } else {
+        document.getElementById('folder-picker').hidden = false;
+        initBrowser(browserPath || '/Users/pratulwadhwa/Documents/Workspace/VarietyBookHouse');
+        render();
+      }
     } catch (e) {
       var el2 = document.getElementById('content');
       el2.innerHTML = '';
@@ -531,6 +774,82 @@
         h('div', { text: 'Could not load state: ' + e.message }),
         h('div', { text: 'Check that the importer is running, then press Refresh.' })
       ]));
+    }
+  }
+
+  async function initBrowser(startPath) {
+    browserPath = startPath;
+    document.getElementById('browser-path').textContent = browserPath;
+    document.getElementById('folder-path-input').value = browserPath;
+    document.getElementById('btn-go-up').hidden = browserPath === pathRoot();
+    try {
+      var data = await api('/api/browse?path=' + encodeURIComponent(browserPath));
+      renderBrowser(data);
+    } catch (e) {
+      toast('Failed to browse: ' + e.message);
+    }
+  }
+
+  function pathRoot() {
+    return '/';
+  }
+
+  function pathDirname(p) {
+    var i = p.lastIndexOf('/');
+    return i > 0 ? p.substring(0, i) : '/';
+  }
+
+  function renderBrowser(data) {
+    var container = document.getElementById('browser-dirs');
+    container.innerHTML = '';
+    var empty = document.getElementById('browser-empty');
+    var startBtn = document.getElementById('btn-start-here');
+
+    startBtn.hidden = !data.hasImages;
+    if (data.dirs.length === 0) {
+      empty.hidden = false;
+      if (data.hasImages) empty.textContent = 'This folder has images. Click "Start processing here".';
+      else empty.textContent = 'No subfolders or images here.';
+    } else {
+      empty.hidden = true;
+      data.dirs.forEach(function(dir) {
+        var btn = h('button', {
+          class: 'ghost',
+          type: 'button',
+          style: 'width: 100%; text-align: left; justify-content: space-between;',
+          text: dir.name + ' '
+        });
+        var span = h('span', { style: 'color: var(--faint);', text: dir.path });
+        btn.appendChild(span);
+        btn.addEventListener('click', function() { initBrowser(dir.path); });
+        container.appendChild(btn);
+      });
+    }
+
+    startBtn.onclick = function() { startJob(browserPath); };
+  }
+
+  async function startJob(folder) {
+    var btn = document.getElementById('btn-start-here');
+    btn.disabled = true;
+    btn.textContent = 'Starting…';
+    progressId = null;
+    startProgressPolling();
+    try {
+      await api('/api/start-job', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder: folder })
+      });
+      choosingFolder = false;
+      toast('Job started, loading…');
+      loadState();
+    } catch (e) {
+      toast('Failed to start job: ' + e.message);
+      btn.disabled = false;
+      btn.textContent = 'Start processing here';
+    } finally {
+      finishProgressPolling();
     }
   }
 
@@ -608,10 +927,17 @@
       return box;
     }
     box.appendChild(h('div', { text: 'No books in this tab.' }));
-    box.appendChild(h('div', { text: 'Run the pipeline first: ' }));
-    var line = h('div', {}, []);
-    line.appendChild(h('code', { text: 'node src/run.mjs ' + (state && state.folder ? state.folder : '<folder>') }));
-    box.appendChild(line);
+    if (state && state.folder) {
+      var btn = h('button', { class: 'primary', type: 'button', text: 'Process this folder' });
+      btn.addEventListener('click', function () { startJob(state.folder); });
+      box.appendChild(h('div', { text: 'Or process the folder via UI:' }));
+      box.appendChild(btn);
+    } else {
+      box.appendChild(h('div', { text: 'Run the pipeline first: ' }));
+      var line = h('div', {}, []);
+      line.appendChild(h('code', { text: 'node src/run.mjs <folder>' }));
+      box.appendChild(line);
+    }
     return box;
   }
 
@@ -664,6 +990,7 @@
     row.appendChild(h('div', { class: 'mrp', text: fmtPrice(cand.mrp) }));
     if (cand.mrpMatch) row.appendChild(h('div', { class: 'mrp-match', text: 'MRP-MATCH' }));
     else row.appendChild(h('div', { class: 'score', text: 'score ' + cand.score }));
+    if (cand.swapped) row.appendChild(h('div', { class: 'mrp-match', text: 'TITLE/AUTHOR SWAPPED' }));
     var action;
     if (chosen) {
       action = h('span', { class: 'status-pill committed', text: 'chosen' });
@@ -865,18 +1192,21 @@
     renderHeader();
     renderTabs();
     renderContent();
+    if (!progressTimer) renderProgress(state.progress);
   }
 
   async function withBusy(fn) {
     if (busy) return;
     busy = true;
     render();
+    startProgressPolling();
     try {
       await fn();
     } catch (e) {
       toast(e.message || String(e));
     } finally {
       busy = false;
+      finishProgressPolling();
       debounceRefresh();
     }
   }
@@ -960,9 +1290,44 @@
   }
 
   document.getElementById('btn-commit').addEventListener('click', commitAll);
+  document.getElementById('progress-dismiss').addEventListener('click', function () {
+    progressDismissed = true;
+    renderProgress(null);
+  });
   document.getElementById('btn-refresh').addEventListener('click', function () {
     loadState();
   });
+  document.getElementById('btn-change-folder').addEventListener('click', function () {
+    choosingFolder = true;
+    document.getElementById('folder-picker').hidden = false;
+    initBrowser(state && state.folder ? state.folder : '/Users/pratulwadhwa/Documents/Workspace/VarietyBookHouse');
+  });
+  document.getElementById('btn-open-path').addEventListener('click', function () {
+    var input = document.getElementById('folder-path-input').value.trim();
+    if (input) initBrowser(input);
+  });
+  document.getElementById('btn-start-path').addEventListener('click', function () {
+    var input = document.getElementById('folder-path-input').value.trim();
+    if (input) startJob(input);
+  });
+  document.getElementById('folder-path-input').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      var input = document.getElementById('folder-path-input').value.trim();
+      if (input) initBrowser(input);
+    }
+  });
+  document.getElementById('btn-go-up').addEventListener('click', function () {
+    if (browserPath !== pathRoot()) {
+      initBrowser(pathDirname(browserPath));
+    }
+  });
+
+  setInterval(function () {
+    if (document.visibilityState !== 'visible') return;
+    pollProgress();
+    if (progressBusy && !progressTimer) startProgressPolling();
+  }, 3000);
 
   setInterval(function () {
     if (document.visibilityState === 'visible' && !busy) loadState();

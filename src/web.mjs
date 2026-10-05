@@ -1,9 +1,10 @@
 import 'dotenv/config'
 import http from 'node:http'
-import { readFile, writeFile, rename, stat, mkdir } from 'node:fs/promises'
+import { readFile, writeFile, rename, stat, mkdir, readdir } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { getProgress } from './progress.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const defaultJobDir = path.resolve(here, '..', 'job')
@@ -69,6 +70,33 @@ function computeCounts(state) {
   }
 }
 
+async function browseDir(dir) {
+  try {
+    const resolved = path.resolve(dir)
+    const entries = await readdir(resolved, { withFileTypes: true })
+    const dirs = entries
+      .filter(e => e.isDirectory())
+      .map(e => ({ name: e.name, path: path.join(resolved, e.name) }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+    const hasImages = await dirHasImages(resolved)
+    return { dir: resolved, dirs, hasImages }
+  } catch {
+    return { dir: path.resolve(dir), dirs: [], hasImages: false }
+  }
+}
+
+async function dirHasImages(dir) {
+  const entries = await readdir(dir, { withFileTypes: true })
+  for (const entry of entries) {
+    const abs = path.join(dir, entry.name)
+    if (entry.isFile() && IMAGE_EXT.test(entry.name)) return true
+    if (entry.isDirectory() && await dirHasImages(abs)) return true
+  }
+  return false
+}
+
+const IMAGE_EXT = /\.(jpe?g|png|webp|heic)$/i
+
 function defaultChecks() {
   return {
     lms: async () => {
@@ -84,13 +112,13 @@ function defaultChecks() {
       }
     },
     db: async () => {
-      if (!process.env.DATABASE_URL) return { ok: false }
+      const configured = Boolean(process.env.DATABASE_URL)
       try {
-        const { fetchProducts } = await import('./db.mjs')
-        await withTimeout(fetchProducts(), 3000)
-        return { ok: true }
-      } catch {
-        return { ok: false }
+        const { fetchProducts, catalogueStatus } = await import('./db.mjs')
+        const products = await fetchProducts()
+        return { ok: configured && products.length > 0, configured, catalogue: catalogueStatus() }
+      } catch (e) {
+        return { ok: false, configured, error: e.message }
       }
     },
     r2: () => {
@@ -212,6 +240,10 @@ async function handle(req, res, ctx) {
 
   if (req.method === 'GET' && p === '/health') return sendJson(res, 200, { ok: true })
 
+  if (req.method === 'GET' && p === '/api/progress') {
+    return sendJson(res, 200, { progress: getProgress() })
+  }
+
   let m
   if (req.method === 'GET' && (m = p.match(/^\/img\/([a-f0-9]{64})$/i))) {
     return serveImage(res, ctx.jobDir, m[1].toLowerCase())
@@ -228,6 +260,7 @@ async function handle(req, res, ctx) {
       db,
       r2,
       counts: computeCounts(state),
+      progress: getProgress(),
       books,
       images: Object.values(state.images),
     })
@@ -238,35 +271,85 @@ async function handle(req, res, ctx) {
   }
 
   if (req.method === 'POST' && p === '/api/commit') {
-    const state = await loadState(ctx.jobDir)
+    const loaded = await loadState(ctx.jobDir)
+    const { JobState } = await import('./state.mjs')
     const { commitConfirmed } = await import('./commit.mjs')
-    const results = await commitConfirmed({ state })
-    await saveState(ctx.jobDir, state)
+    const jobState = new JobState(ctx.jobDir)
+    jobState.state = loaded
+    const results = await commitConfirmed({ state: jobState })
+    await saveState(ctx.jobDir, jobState.stateData)
     return sendJson(res, 200, { results })
   }
 
   if (req.method === 'POST' && p === '/api/retry') {
     const state = await loadState(ctx.jobDir)
+    if (!state.folder) throw httpError('no folder selected yet', 400)
+    const { JobState } = await import('./state.mjs')
     const pipeline = await import('./pipeline.mjs')
+    const jobState = new JobState(ctx.jobDir).load()
     let retried
     if (typeof pipeline.retryFailed === 'function') {
-      retried = await pipeline.retryFailed(state)
+      retried = await pipeline.retryFailed(jobState)
     } else {
-      try {
-        retried = await pipeline.orchestrate({
-          folder: state.folder,
-          dryRun: state.dryRun,
-          limit: 0,
-          state,
-          retryFailed: true,
-        })
-      } catch (err) {
-        if (err instanceof TypeError) throw httpError('pipeline does not support retry', 501)
-        throw err
-      }
+      retried = await pipeline.orchestrate({
+        folder: jobState.folder,
+        dryRun: jobState.dryRun,
+        limit: 0,
+        state: jobState,
+        retryFailed: true,
+      })
     }
-    await saveState(ctx.jobDir, state)
+    await saveState(ctx.jobDir, jobState.stateData)
     return sendJson(res, 200, { ok: true, retried })
+  }
+
+  if (req.method === 'GET' && p === '/api/browse') {
+    const url = new URL(req.url, 'http://localhost')
+    const dir = url.searchParams.get('path') || process.cwd()
+    const result = await browseDir(dir)
+    return sendJson(res, 200, result)
+  }
+
+  if (req.method === 'POST' && p === '/api/start-job') {
+    const body = await readJsonBody(req)
+    const requested = typeof body.folder === 'string' ? body.folder.trim() : ''
+    if (!requested) throw httpError('folder is required', 400)
+    const folder = path.resolve(requested)
+    let st
+    try {
+      st = await stat(folder)
+    } catch {
+      throw httpError('folder not found', 404)
+    }
+    if (!st.isDirectory()) throw httpError('not a directory', 400)
+
+    const { loadConfig } = await import('./config.mjs')
+    const { discoverImages, orchestrate } = await import('./pipeline.mjs')
+    const { JobState } = await import('./state.mjs')
+
+    const images = discoverImages(folder)
+    if (images.length === 0) throw httpError('no images found in folder', 400)
+
+    const { ok, errors } = loadConfig({ needLlm: true, needDb: false, needR2: false })
+    if (!ok) throw httpError('Missing config: ' + errors.join(', '), 500)
+
+    const state = new JobState(ctx.jobDir)
+    state.reset(folder, false)
+
+    try {
+      await orchestrate({
+        folder,
+        dryRun: false,
+        limit: 0,
+        state,
+        retryFailed: false,
+      })
+    } catch (err) {
+      console.error('orchestrate error:', err)
+      throw err
+    }
+
+    return sendJson(res, 200, { ok: true, folder, imageCount: images.length })
   }
 
   throw httpError('not found', 404)
