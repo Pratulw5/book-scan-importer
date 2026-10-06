@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 export const PHASE_LABELS = {
   discover: 'Scanning folder',
   crop: 'Analyzing image',
-  ocr: 'Reading cover with LLM',
+  ocr: 'Reading text (barcode + OCR)',
   match: 'Matching against catalog',
   commit: 'Committing to database',
 }

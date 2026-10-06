@@ -7,7 +7,9 @@ import { resetProgress, startProgress, endProgress } from '../src/progress.mjs'
 
 const SHA = 'a'.repeat(64)
 const FAILED_SHA = 'b'.repeat(64)
+const CROP_ONLY_SHA = 'd'.repeat(64)
 const JPG_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46])
+const ORIGINAL_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0xe1, 0x00, 0x20, 0x4f, 0x52, 0x49, 0x47])
 
 function fixtureState() {
   return {
@@ -37,7 +39,7 @@ function fixtureState() {
         file: 'beta-back.jpg',
         path: '/tmp/fake-books/beta-back.jpg',
         status: 'failed',
-        error: 'LLM timed out',
+        error: 'ocr_batch.py failed (1): ModuleNotFoundError',
         dims: null,
         ocr: null,
       },
@@ -133,14 +135,17 @@ describe('web.mjs', () => {
   beforeAll(async () => {
     jobDir = await mkdtemp(path.join(tmpdir(), 'bsi-web-test-'))
     await mkdir(path.join(jobDir, 'crops'), { recursive: true })
+    await mkdir(path.join(jobDir, 'originals'), { recursive: true })
     await writeFile(path.join(jobDir, 'crops', `${SHA}.jpg`), JPG_BYTES)
+    await writeFile(path.join(jobDir, 'crops', `${CROP_ONLY_SHA}.jpg`), JPG_BYTES)
+    await writeFile(path.join(jobDir, 'originals', `${SHA}.jpg`), ORIGINAL_BYTES)
     await writeFile(stateFile(), JSON.stringify(fixtureState(), null, 2))
 
     server = await startServer({
       port: 0,
       jobDir,
       checks: {
-        lms: async () => ({ ok: true, model: 'test-vision', host: 'http://lmstudio.test' }),
+        ocr: async () => ({ ok: true }),
         db: async () => ({ ok: true }),
         r2: () => ({ ok: true }),
       },
@@ -175,7 +180,7 @@ describe('web.mjs', () => {
     const body = await res.json()
     expect(body.folder).toBe('/tmp/fake-books')
     expect(body.dryRun).toBe(false)
-    expect(body.lms).toEqual({ ok: true, model: 'test-vision', host: 'http://lmstudio.test' })
+    expect(body.ocr).toEqual({ ok: true })
     expect(body.db).toEqual({ ok: true })
     expect(body.r2).toEqual({ ok: true })
     expect(body.counts).toEqual({ matched: 0, review: 1, unmatched: 1, failedImages: 1, committed: 1 })
@@ -205,6 +210,16 @@ describe('web.mjs', () => {
       expect(res.status).toBe(404)
       await res.json()
     }
+  })
+
+  it('GET /img/:sha?src=orig streams the original, falling back to the crop', async () => {
+    const res = await fetch(`${base}/img/${SHA}?src=orig`)
+    expect(res.status).toBe(200)
+    expect(Buffer.from(await res.arrayBuffer()).equals(ORIGINAL_BYTES)).toBe(true)
+
+    const fallback = await fetch(`${base}/img/${CROP_ONLY_SHA}?src=orig`)
+    expect(fallback.status).toBe(200)
+    expect(Buffer.from(await fallback.arrayBuffer()).equals(JPG_BYTES)).toBe(true)
   })
 
   it('unknown route → 404 JSON', async () => {
@@ -313,6 +328,36 @@ describe('web.mjs', () => {
       expect(body.progress.fraction).toBe(1)
       expect(body.progress.summary).toBe('1/1 committed')
       expect(body.progress.events).toHaveLength(1)
+    })
+  })
+
+  describe('image source toggle', () => {
+    it('POST /api/image/:sha/source { original } persists useOriginal, { crop } reverts', async () => {
+      const res = await fetch(`${base}/api/image/${SHA}/source`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: 'original' }),
+      })
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true, sha: SHA, source: 'original' })
+      expect(JSON.parse(await readFile(stateFile(), 'utf8')).images[SHA].useOriginal).toBe(true)
+
+      const back = await fetch(`${base}/api/image/${SHA}/source`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: 'crop' }),
+      })
+      expect((await back.json()).source).toBe('crop')
+      expect(JSON.parse(await readFile(stateFile(), 'utf8')).images[SHA].useOriginal).toBe(false)
+    })
+
+    it('POST /api/image/:sha/source for unknown sha → 404', async () => {
+      const res = await fetch(`${base}/api/image/${'c'.repeat(64)}/source`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: 'original' }),
+      })
+      expect(res.status).toBe(404)
     })
   })
 })

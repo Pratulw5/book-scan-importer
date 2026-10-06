@@ -201,7 +201,7 @@ describe('console renderer', () => {
       p.step()
       p.step()
       const out = stream.text()
-      expect(out).toContain('Reading cover with LLM')
+      expect(out).toContain('Reading text (barcode + OCR)')
       expect(out).toContain('2/4')
       expect(out).toContain('50%')
       expect(out).not.toContain('\x1b')

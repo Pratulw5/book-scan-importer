@@ -26,25 +26,206 @@ export function levenshtein(a, b) {
   return prev[n]
 }
 
+export function matchNorm(s) {
+  return normalize(s)
+    .replace(/sh/g, 's')
+    .replace(/w/g, 'v')
+}
+
 export function titleScore(a, b) {
-  const na = normalize(a)
-  const nb = normalize(b)
+  const na = matchNorm(a)
+  const nb = matchNorm(b)
   if (!na || !nb) return 0
   const dist = levenshtein(na, nb)
   return Math.max(0, 100 - (100 * dist) / Math.max(na.length, nb.length, 1))
 }
 
+function titleVariants(n) {
+  const out = [n]
+  const dropped = n
+    .split(' ')
+    .map((w) => (w.length >= 4 && w.endsWith('a') ? w.slice(0, -1) : w))
+    .join(' ')
+  if (dropped !== n) out.push(dropped)
+  return out
+}
+
+export function pickTitleFromLines(lines) {
+  const usable = (lines ?? [])
+    .filter((line) => (line.conf ?? 100) >= 50)
+    .map((line) => ({
+      text: String(line.text ?? '').trim(),
+      roman: line.roman ? String(line.roman).trim() : '',
+      x: line.box?.[0] ?? 0,
+      y: line.box?.[1] ?? 0,
+      w: line.box?.[2] ?? 0,
+      h: line.box?.[3] ?? 0,
+    }))
+    .filter((l) => l.text.length >= 3 && l.text.length <= 140)
+  if (usable.length === 0) return ''
+
+  const blocks = []
+  for (const line of usable.sort((a, b) => a.y - b.y || a.x - b.x)) {
+    const y0 = line.y
+    const y1 = line.y + line.h
+    let block = null
+    for (const b of blocks) {
+      const gap = Math.max(0, Math.max(b.y0 - y1, y0 - b.y1))
+      if (gap <= 0.3 * Math.max(b.maxH, line.h)) {
+        block = b
+        break
+      }
+    }
+    if (block) {
+      block.lines.push(line)
+      block.y0 = Math.min(block.y0, y0)
+      block.y1 = Math.max(block.y1, y1)
+      block.x0 = Math.min(block.x0, line.x)
+      block.x1 = Math.max(block.x1, line.x + line.w)
+      block.maxH = Math.max(block.maxH, line.h)
+    } else {
+      blocks.push({ lines: [line], y0, y1, x0: line.x, x1: line.x + line.w, maxH: line.h })
+    }
+  }
+
+  let best = null
+  let bestScore = -1
+  for (const b of blocks) {
+    const text = b.lines.map((l) => l.roman || l.text).join(' ')
+    const score = b.maxH + Math.min(text.length, 60) / 10
+    if (score > bestScore) {
+      bestScore = score
+      best = b
+    }
+  }
+  return best.lines.map((l) => l.roman || l.text).join(' ').slice(0, 140)
+}
+
 export function parsePrice(text) {
+  const m = matchPrice(text)
+  return m ? m.value : null
+}
+
+export function matchPrice(text) {
   if (text == null) return null
   const s = String(text)
   const toInt = (v) => parseInt(v.replace(/,/g, ''), 10)
-  const rupee = s.match(/₹\s*(\d[\d,]*)/)
-  if (rupee) return toInt(rupee[1])
-  const rs = s.match(/Rs\.?\s*(\d[\d,]*)/)
-  if (rs) return toInt(rs[1])
-  const inr = s.match(/(INR)\s*(\d+)/i)
-  if (inr) return toInt(inr[2])
+  const rupee = s.match(/₹\s*(\d[\d,]*)(\.\d+)?/)
+  if (rupee) return { value: toInt(rupee[1]), text: rupee[0].trim() }
+  const rs = s.match(/Rs\.?\s*(\d[\d,]*)(\.\d+)?/)
+  if (rs) return { value: toInt(rs[1]), text: rs[0].trim() }
+  const inr = s.match(/(INR)\s*(\d+)(\.\d+)?/i)
+  if (inr) return { value: toInt(inr[2]), text: inr[0].trim() }
   return null
+}
+
+const MIN_PRICE = 1
+const MAX_PRICE = 20000
+
+export function priceFromLines(lines) {
+  for (const line of lines ?? []) {
+    if ((line.conf ?? 100) < 40) continue
+    const m = matchPrice(line.text)
+    if (m && m.value >= MIN_PRICE && m.value <= MAX_PRICE) return { price: m.value, priceText: m.text }
+  }
+  return { price: null, priceText: '' }
+}
+
+export function blurbFromLines(lines, skip = '') {
+  const skipKey = normalize(skip)
+  let best = ''
+  for (const line of lines ?? []) {
+    if ((line.conf ?? 100) < 40) continue
+    const text = String(line.text ?? '').trim()
+    if (text.length < 80) continue
+    if (normalize(text) === skipKey) continue
+    if (text.length > best.length) best = text
+  }
+  return best.slice(0, 320)
+}
+
+export function classifyBarcodes(barcodes) {
+  let isbn = ''
+  let shopCode = ''
+  for (const bar of barcodes ?? []) {
+    const text = String(bar.text ?? '').replace(/[^0-9Xx]/g, '')
+    if (!shopCode && /^\d{6}$/.test(text)) {
+      shopCode = text
+      continue
+    }
+    const format = String(bar.format ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '')
+    if (!isbn && text.length === 13 && (format.includes('EAN13') || format.includes('ISBN'))) {
+      if (isValidIsbn(text)) isbn = text
+    }
+  }
+  return { isbn, shopCode }
+}
+
+const indexCache = new WeakMap()
+
+function tokens(s) {
+  return [...new Set(String(s).split(' ').filter((t) => t.length >= 3))]
+}
+
+export function titleIndex(products) {
+  let idx = indexCache.get(products)
+  if (idx) return idx
+  const byNorm = new Map()
+  const byToken = new Map()
+  products.forEach((p, i) => {
+    const n = matchNorm(p?.title)
+    if (n && !byNorm.has(n)) byNorm.set(n, i)
+    for (const t of tokens(n)) {
+      let arr = byToken.get(t)
+      if (!arr) byToken.set(t, (arr = []))
+      arr.push(i)
+    }
+  })
+  idx = { byNorm, byToken }
+  indexCache.set(products, idx)
+  return idx
+}
+
+export function bestTitleMatch(line, products, minScore = 95) {
+  const base = matchNorm(line)
+  if (base.length < 4 || !Array.isArray(products) || products.length === 0) return null
+  const idx = titleIndex(products)
+  let best = null
+  for (const n of titleVariants(base)) {
+    const exact = idx.byNorm.get(n)
+    if (exact !== undefined) return { product: products[exact], score: 100, exact: true }
+    const toks = tokens(n)
+    if (toks.length === 0) continue
+    const counts = new Map()
+    for (const t of toks) {
+      const arr = idx.byToken.get(t)
+      if (!arr) continue
+      for (const i of arr) counts.set(i, (counts.get(i) ?? 0) + 1)
+    }
+    const need = Math.max(1, Math.ceil(toks.length / 2))
+    for (const [i, c] of counts) {
+      if (c < need) continue
+      const s = titleScore(n, products[i].title)
+      if (!best || s > best.score) best = { product: products[i], score: Math.round(s * 100) / 100, exact: false }
+    }
+  }
+  return best && best.score >= minScore ? best : null
+}
+
+export function bestTitleMatchLines(lines, products, minScore = 95) {
+  let best = null
+  const candidates = [pickTitleFromLines(lines)]
+  for (const line of lines ?? []) {
+    if ((line.conf ?? 100) < 40) continue
+    candidates.push(String(line.text ?? ''), String(line.roman ?? ''))
+  }
+  for (const raw of candidates) {
+    const candidate = String(raw ?? '').trim()
+    if (!candidate) continue
+    const m = bestTitleMatch(candidate, products, minScore)
+    if (m && (!best || m.score > best.score)) best = { ...m, line: candidate }
+  }
+  return best
 }
 
 export function isValidIsbn(isbn) {

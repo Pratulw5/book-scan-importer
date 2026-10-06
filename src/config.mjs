@@ -1,11 +1,9 @@
 import 'dotenv/config'
 
-export function loadConfig({ needDb = false, needR2 = false, needLlm = false } = {}) {
+export function loadConfig({ needDb = false, needR2 = false } = {}) {
   const errors = []
 
   const config = {
-    lmstudioHost: process.env.LMSTUDIO_HOST || 'http://127.0.0.1:1234',
-    lmstudioModel: process.env.LMSTUDIO_MODEL || '',
     databaseUrl: process.env.DATABASE_URL || '',
     r2AccountId: process.env.R2_ACCOUNT_ID || '',
     r2AccessKeyId: process.env.R2_ACCESS_KEY_ID || '',
@@ -24,9 +22,5 @@ export function loadConfig({ needDb = false, needR2 = false, needLlm = false } =
     if (!config.r2SecretAccessKey) errors.push('R2_SECRET_ACCESS_KEY is required')
     if (!config.r2PublicUrl) errors.push('R2_PUBLIC_URL is required')
   }
-  if (needLlm && !config.lmstudioHost) {
-    errors.push('LMSTUDIO_HOST must be set (default http://127.0.0.1:1234)')
-  }
-
   return { ok: errors.length === 0, errors, config }
 }

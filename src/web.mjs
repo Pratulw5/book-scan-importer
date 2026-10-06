@@ -1,7 +1,7 @@
 import 'dotenv/config'
 import http from 'node:http'
 import { readFile, writeFile, rename, stat, mkdir, readdir } from 'node:fs/promises'
-import { createReadStream } from 'node:fs'
+import { createReadStream, existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getProgress } from './progress.mjs'
@@ -12,22 +12,6 @@ const webuiPath = path.join(here, 'webui.html')
 
 function isDirectRun() {
   return Boolean(process.argv[1]) && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-}
-
-function withTimeout(promise, ms) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms)
-    Promise.resolve(promise).then(
-      (value) => {
-        clearTimeout(timer)
-        resolve(value)
-      },
-      (err) => {
-        clearTimeout(timer)
-        reject(err)
-      },
-    )
-  })
 }
 
 function httpError(message, status) {
@@ -97,19 +81,28 @@ async function dirHasImages(dir) {
 
 const IMAGE_EXT = /\.(jpe?g|png|webp|heic)$/i
 
+let jobInProgress = false
+let ocrCheckPromise = null
+
 function defaultChecks() {
   return {
-    lms: async () => {
-      const host = process.env.LMSTUDIO_HOST || 'http://127.0.0.1:1234'
-      if (process.env.LMSTUDIO_MODEL) return { ok: true, model: process.env.LMSTUDIO_MODEL, host }
-      try {
-        const { listModels } = await import('./llm.mjs')
-        const model = await withTimeout(listModels(), 1000)
-        if (!model) throw new Error('no models reported')
-        return { ok: true, model, host }
-      } catch {
-        return { ok: false, model: null, host }
+    ocr: () => {
+      if (!ocrCheckPromise) {
+        ocrCheckPromise = (async () => {
+          const { spawnSync } = await import('node:child_process')
+          const root = path.resolve(here, '..')
+          const missing = ['read_barcodes.py', 'ocr_batch.py', 'crop_book.py'].filter(
+            (f) => !existsSync(path.join(root, f)),
+          )
+          if (missing.length) return { ok: false, missing }
+          const probe = spawnSync('python3', ['-c', 'import zxingcpp, cv2, easyocr, indic_transliteration'], { timeout: 60000 })
+          if (probe.status !== 0) {
+            return { ok: false, error: String(probe.stderr ?? '').slice(-300) || 'python imports failed' }
+          }
+          return { ok: true }
+        })().catch((e) => ({ ok: false, error: e.message }))
       }
+      return ocrCheckPromise
     },
     db: async () => {
       const configured = Boolean(process.env.DATABASE_URL)
@@ -155,10 +148,15 @@ async function readJsonBody(req, limit = 1_000_000) {
   }
 }
 
-async function serveImage(res, jobDir, sha) {
-  const cropsDir = path.join(jobDir, 'crops')
-  const file = path.join(cropsDir, `${sha}.jpg`)
-  if (path.dirname(file) !== cropsDir) throw httpError('invalid image path', 400)
+async function serveImage(res, jobDir, sha, src = 'crop') {
+  const primary = path.join(jobDir, src === 'orig' ? 'originals' : 'crops', `${sha}.jpg`)
+  const secondary = path.join(jobDir, src === 'orig' ? 'crops' : 'originals', `${sha}.jpg`)
+  let file = primary
+  try {
+    await stat(primary)
+  } catch {
+    file = secondary
+  }
   let info
   try {
     info = await stat(file)
@@ -246,17 +244,30 @@ async function handle(req, res, ctx) {
 
   let m
   if (req.method === 'GET' && (m = p.match(/^\/img\/([a-f0-9]{64})$/i))) {
-    return serveImage(res, ctx.jobDir, m[1].toLowerCase())
+    const src = url.searchParams.get('src') === 'orig' ? 'orig' : 'crop'
+    return serveImage(res, ctx.jobDir, m[1].toLowerCase(), src)
+  }
+
+  if (req.method === 'POST' && (m = p.match(/^\/api\/image\/([a-f0-9]{64})\/source$/))) {
+    const sha = m[1].toLowerCase()
+    const body = await readJsonBody(req)
+    const source = body.source === 'original' ? 'original' : 'crop'
+    const state = await loadState(ctx.jobDir)
+    const img = state.images[sha]
+    if (!img) throw httpError('image not found', 404)
+    img.useOriginal = source === 'original'
+    await saveState(ctx.jobDir, state)
+    return sendJson(res, 200, { ok: true, sha, source })
   }
 
   if (req.method === 'GET' && p === '/api/state') {
     const state = await loadState(ctx.jobDir)
-    const [lms, db, r2] = await Promise.all([ctx.checks.lms(), ctx.checks.db(), ctx.checks.r2()])
+    const [ocr, db, r2] = await Promise.all([ctx.checks.ocr(), ctx.checks.db(), ctx.checks.r2()])
     const books = Object.values(state.books).sort((a, b) => (a.sortIndex ?? 0) - (b.sortIndex ?? 0))
     return sendJson(res, 200, {
       folder: state.folder ?? null,
       dryRun: Boolean(state.dryRun),
-      lms,
+      ocr,
       db,
       r2,
       counts: computeCounts(state),
@@ -282,25 +293,31 @@ async function handle(req, res, ctx) {
   }
 
   if (req.method === 'POST' && p === '/api/retry') {
-    const state = await loadState(ctx.jobDir)
-    if (!state.folder) throw httpError('no folder selected yet', 400)
-    const { JobState } = await import('./state.mjs')
-    const pipeline = await import('./pipeline.mjs')
-    const jobState = new JobState(ctx.jobDir).load()
-    let retried
-    if (typeof pipeline.retryFailed === 'function') {
-      retried = await pipeline.retryFailed(jobState)
-    } else {
-      retried = await pipeline.orchestrate({
-        folder: jobState.folder,
-        dryRun: jobState.dryRun,
-        limit: 0,
-        state: jobState,
-        retryFailed: true,
-      })
+    if (jobInProgress) throw httpError('a job is already running', 409)
+    jobInProgress = true
+    try {
+      const state = await loadState(ctx.jobDir)
+      if (!state.folder) throw httpError('no folder selected yet', 400)
+      const { JobState } = await import('./state.mjs')
+      const pipeline = await import('./pipeline.mjs')
+      const jobState = new JobState(ctx.jobDir).load()
+      let retried
+      if (typeof pipeline.retryFailed === 'function') {
+        retried = await pipeline.retryFailed(jobState)
+      } else {
+        retried = await pipeline.orchestrate({
+          folder: jobState.folder,
+          dryRun: jobState.dryRun,
+          limit: 0,
+          state: jobState,
+          retryFailed: true,
+        })
+      }
+      await saveState(ctx.jobDir, jobState.stateData)
+      return sendJson(res, 200, { ok: true, retried })
+    } finally {
+      jobInProgress = false
     }
-    await saveState(ctx.jobDir, jobState.stateData)
-    return sendJson(res, 200, { ok: true, retried })
   }
 
   if (req.method === 'GET' && p === '/api/browse') {
@@ -311,45 +328,51 @@ async function handle(req, res, ctx) {
   }
 
   if (req.method === 'POST' && p === '/api/start-job') {
-    const body = await readJsonBody(req)
-    const requested = typeof body.folder === 'string' ? body.folder.trim() : ''
-    if (!requested) throw httpError('folder is required', 400)
-    const folder = path.resolve(requested)
-    let st
+    if (jobInProgress) throw httpError('a job is already running', 409)
+    jobInProgress = true
     try {
-      st = await stat(folder)
-    } catch {
-      throw httpError('folder not found', 404)
+      const body = await readJsonBody(req)
+      const requested = typeof body.folder === 'string' ? body.folder.trim() : ''
+      if (!requested) throw httpError('folder is required', 400)
+      const folder = path.resolve(requested)
+      let st
+      try {
+        st = await stat(folder)
+      } catch {
+        throw httpError('folder not found', 404)
+      }
+      if (!st.isDirectory()) throw httpError('not a directory', 400)
+
+      const { loadConfig } = await import('./config.mjs')
+      const { discoverImages, orchestrate } = await import('./pipeline.mjs')
+      const { JobState } = await import('./state.mjs')
+
+      const images = discoverImages(folder)
+      if (images.length === 0) throw httpError('no images found in folder', 400)
+
+      const { ok, errors } = loadConfig({ needDb: false, needR2: false })
+      if (!ok) throw httpError('Missing config: ' + errors.join(', '), 500)
+
+      const state = new JobState(ctx.jobDir)
+      state.reset(folder, false)
+
+      try {
+        await orchestrate({
+          folder,
+          dryRun: false,
+          limit: 0,
+          state,
+          retryFailed: false,
+        })
+      } catch (err) {
+        console.error('orchestrate error:', err)
+        throw err
+      }
+
+      return sendJson(res, 200, { ok: true, folder, imageCount: images.length })
+    } finally {
+      jobInProgress = false
     }
-    if (!st.isDirectory()) throw httpError('not a directory', 400)
-
-    const { loadConfig } = await import('./config.mjs')
-    const { discoverImages, orchestrate } = await import('./pipeline.mjs')
-    const { JobState } = await import('./state.mjs')
-
-    const images = discoverImages(folder)
-    if (images.length === 0) throw httpError('no images found in folder', 400)
-
-    const { ok, errors } = loadConfig({ needLlm: true, needDb: false, needR2: false })
-    if (!ok) throw httpError('Missing config: ' + errors.join(', '), 500)
-
-    const state = new JobState(ctx.jobDir)
-    state.reset(folder, false)
-
-    try {
-      await orchestrate({
-        folder,
-        dryRun: false,
-        limit: 0,
-        state,
-        retryFailed: false,
-      })
-    } catch (err) {
-      console.error('orchestrate error:', err)
-      throw err
-    }
-
-    return sendJson(res, 200, { ok: true, folder, imageCount: images.length })
   }
 
   throw httpError('not found', 404)

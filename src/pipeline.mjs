@@ -1,8 +1,23 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { sha256, cropWhiteBg, safeName } from './image.mjs'
-import { listModels, visionExtract } from './llm.mjs'
-import { normalize, parsePrice, isValidIsbn, rankBooks, decide, decideUnavailable } from './match.mjs'
+import { sha256, cropWhiteBg, toOriginalJpeg, safeName } from './image.mjs'
+import { readBarcodes } from './barcode.mjs'
+import { runOcr } from './ocr.mjs'
+import { resolveShopCode } from './shopcodes.mjs'
+import {
+  normalize,
+  isValidIsbn,
+  scoreCandidate,
+  rankBooks,
+  decide,
+  decideUnavailable,
+  classifyBarcodes,
+  bestTitleMatchLines,
+  priceFromLines,
+  blurbFromLines,
+  pickTitleFromLines,
+  matchNorm,
+} from './match.mjs'
 import { fetchProducts } from './db.mjs'
 import { startProgress, endProgress } from './progress.mjs'
 
@@ -25,6 +40,18 @@ export function discoverImages(folder) {
   return files.sort()
 }
 
+function findIsbn(lines) {
+  for (const line of lines ?? []) {
+    const digits = String(line.text ?? '').replace(/[^0-9Xx]/g, '')
+    for (let i = 0; i + 13 <= digits.length; i++) {
+      const cand = digits.slice(i, i + 13)
+      if (isValidIsbn(cand)) return cand
+    }
+    if (digits.length === 10 && isValidIsbn(digits)) return digits
+  }
+  return ''
+}
+
 export function rebuildBooks(state, files) {
   const indexByFile = new Map(files.map((f, i) => [f, i]))
   const entryByFile = new Map()
@@ -36,7 +63,9 @@ export function rebuildBooks(state, files) {
   for (const file of files) {
     const entry = entryByFile.get(file)
     if (!entry || (entry.status !== 'ocr_done' && entry.status !== 'committed')) continue
-    const key = entry.ocr?.title ? normalize(entry.ocr.title) : safeName(file)
+    const key = entry.productId
+      ? `p:${entry.productId}`
+      : `t:${entry.ocr?.title ? normalize(entry.ocr.title) : safeName(file)}`
     if (!groups.has(key)) groups.set(key, [])
     groups.get(key).push({ entry, index: indexByFile.get(file) ?? 0 })
   }
@@ -48,6 +77,9 @@ export function rebuildBooks(state, files) {
     const ocrF = front.entry.ocr
     const ocrB = back?.entry.ocr
     const title = ocrF?.title || ocrB?.title || ''
+    const shopCode = list.map((x) => x.entry.barcode?.shopCode).find(Boolean) ?? ''
+    const productId = front.entry.productId ?? back?.entry.productId ?? null
+    const barcodePresent = list.some((x) => (x.entry.barcode?.raw?.length ?? 0) > 0)
     const old = state.getBook(key)
     const preserved = old
       ? {
@@ -68,6 +100,10 @@ export function rebuildBooks(state, files) {
       blurb: ocrF?.blurb || ocrB?.blurb || '',
       front: front.entry.sha,
       back: back ? back.entry.sha : null,
+      productId,
+      shopCode,
+      matchMethod: front.entry.matchMethod ?? back?.entry.matchMethod ?? null,
+      barcodePresent,
       ...preserved,
       ...(old && (old.status === 'committed' || old.status === 'created') ? { status: old.status } : {}),
     })
@@ -100,9 +136,63 @@ export async function matchBooks(state, { dryRun, progress = null } = {}) {
     if (dryRun || products === null) {
       const d = decideUnavailable()
       state.setBook(key, { status: d.status, score: d.score, matchReason: d.reason, candidates: [] })
+    } else if (book.productId) {
+      const product = products.find((p) => p.id === book.productId)
+      if (!product) {
+        state.setBook(key, {
+          status: 'needs_review',
+          score: 0,
+          matchReason: 'resolved product id missing from catalogue snapshot',
+          candidates: [],
+        })
+      } else {
+        const r = scoreCandidate(product, book)
+        const candidates = [
+          {
+            id: product.id,
+            title: product.title ?? '',
+            author: product.author ?? '',
+            mrp: product.mrp,
+            isbn: product.isbn ?? '',
+            score: Math.round(r.score * 100) / 100,
+            titleScore: Math.round(r.titleScore * 100) / 100,
+            mrpMatch: r.mrpMatch,
+            authorMatch: r.authorMatch,
+            swapped: r.swapped,
+          },
+        ]
+        let d
+        const priceConflict =
+          book.price != null && product.mrp != null && Number(product.mrp) !== Number(book.price)
+        if (book.matchMethod === 'shopcode' && priceConflict) {
+          d = {
+            status: 'needs_review',
+            score: candidates[0].score,
+            reason: `shop code ${book.shopCode} matched but price differs (scan ₹${book.price}, catalogue ₹${product.mrp})`,
+          }
+        } else if (book.matchMethod === 'shopcode') {
+          d = { status: 'matched', score: candidates[0].score, reason: `shop code ${book.shopCode} → catalogue` }
+        } else {
+          d = decide(candidates, book)
+        }
+        if (book.barcodePresent && d.status === 'unmatched') {
+          d = {
+            status: 'needs_review',
+            score: d.score,
+            reason: 'barcode found but no confident catalogue match',
+          }
+        }
+        if (book.price == null && product.mrp != null && d.status === 'matched') {
+          state.setBook(key, { price: Number(product.mrp) })
+        }
+        state.setBook(key, { status: d.status, score: d.score, matchReason: d.reason, candidates })
+      }
     } else {
       const candidates = rankBooks(products, book)
-      const d = decide(candidates, book)
+      let d = decide(candidates, book)
+      if (book.barcodePresent && d.status === 'unmatched') {
+        d = { status: 'needs_review', score: d.score, reason: 'barcode found but no confident catalogue match' }
+      }
       state.setBook(key, { status: d.status, score: d.score, matchReason: d.reason, candidates })
     }
     if (progress) progress.advance()
@@ -132,6 +222,7 @@ async function run({ folder, dryRun, limit, state, retryFailed, progress }) {
   progress.start('discover', { total: 0, message: folder })
   const files = discoverImages(folder)
   const cropsDir = path.join(state.jobDir, 'crops')
+  const originalsDir = path.join(state.jobDir, 'originals')
 
   const work = []
   for (const file of files) {
@@ -164,49 +255,30 @@ async function run({ folder, dryRun, limit, state, retryFailed, progress }) {
       { phase: 'ocr', total: work.length },
       { phase: 'match', total: 0 },
     ])
-    let model = null
-    try {
-      progress.start('crop', { total: work.length, message: 'loading vision model' })
-      model = await listModels()
-    } catch (e) {
-      console.error(`model discovery failed: ${e.message}`)
-    }
+
+    const ready = []
     for (let i = 0; i < work.length; i++) {
       const { file, buf, entry } = work[i]
       const label = `[${i + 1}/${work.length}] ${file}`
       progress.start('crop', { total: work.length, message: file })
-      if (!model) {
-        const error = `ocr: ${'no vision model available'}`
-        state.setImage(entry.sha, { status: 'failed', error })
-        state.save()
-        failed++
-        progress.log(`${label} → FAILED ${error}`)
-        progress.step({ ok: false })
-        continue
-      }
-      let cropBuf
-      let width
-      let height
+      const cropPath = path.join(cropsDir, `${entry.sha}.jpg`)
+      const originalPath = path.join(originalsDir, `${entry.sha}.jpg`)
       try {
-        const crop = await cropWhiteBg(buf)
-        cropBuf = crop.buffer
-        width = crop.width
-        height = crop.height
-      } catch (e) {
-        const error = `crop: ${e.message}`
-        state.setImage(entry.sha, { status: 'failed', error })
-        state.save()
-        failed++
-        progress.log(`${label} → FAILED ${error}`)
-        progress.step({ ok: false })
-        continue
-      }
-      try {
-        fs.mkdirSync(cropsDir, { recursive: true })
-        fs.writeFileSync(path.join(cropsDir, `${entry.sha}.jpg`), cropBuf)
-        state.setImage(entry.sha, { status: 'cropped', dims: { width, height }, error: null })
+        if (!entry.dims || !fs.existsSync(cropPath)) {
+          const crop = await cropWhiteBg(buf)
+          fs.mkdirSync(cropsDir, { recursive: true })
+          fs.writeFileSync(cropPath, crop.buffer)
+          state.setImage(entry.sha, { dims: { width: crop.width, height: crop.height } })
+        }
+        if (!fs.existsSync(originalPath)) {
+          const original = await toOriginalJpeg(buf)
+          fs.mkdirSync(originalsDir, { recursive: true })
+          fs.writeFileSync(originalPath, original)
+        }
+        state.setImage(entry.sha, { status: 'cropped', error: null })
         state.save()
         progress.step()
+        ready.push({ file, entry, originalPath, label })
       } catch (e) {
         const error = `crop: ${e.message}`
         state.setImage(entry.sha, { status: 'failed', error })
@@ -214,23 +286,89 @@ async function run({ folder, dryRun, limit, state, retryFailed, progress }) {
         failed++
         progress.log(`${label} → FAILED ${error}`)
         progress.step({ ok: false })
-        continue
       }
+    }
+
+    if (ready.length > 0) {
+      progress.start('ocr', { total: ready.length, message: 'scanning barcodes' })
+      const barcodeMap = await readBarcodes(ready.map((r) => ({ id: r.entry.sha, path: r.originalPath })))
+      for (const r of ready) {
+        const raw = barcodeMap.get(r.entry.sha) ?? []
+        const { isbn, shopCode } = classifyBarcodes(raw)
+        r.barcode = { isbn, shopCode, raw }
+        state.setImage(r.entry.sha, { barcode: r.barcode })
+      }
+      state.save()
+
+      progress.setMessage('reading text with EasyOCR (hi, en)')
+      const linesMap = await runOcr(ready.map((r) => ({ id: r.entry.sha, path: r.originalPath })))
+      for (const r of ready) r.lines = linesMap.get(r.entry.sha) ?? []
+    }
+
+    let products = null
+    try {
+      products = await fetchProducts()
+    } catch (e) {
+      console.error(`catalogue snapshot unavailable: ${e.message}`)
+    }
+    const authoritative = new Map()
+
+    for (const r of ready) {
+      const { entry, barcode, lines, label } = r
       try {
-        progress.start('ocr', { total: work.length, message: `${file} → ${model}` })
-        const ocr = await visionExtract({ imageBuf: cropBuf, model })
-        const isbn = isValidIsbn(ocr.isbn) ? ocr.isbn : ''
-        const price = parsePrice(ocr.priceText)
-        state.setImage(entry.sha, {
-          status: 'ocr_done',
-          ocr: { ...ocr, isbn, price },
-          error: null,
-        })
+        const position = (barcode?.raw?.length ?? 0) > 0 ? 'back' : 'front'
+        const { price, priceText } = priceFromLines(lines)
+
+        let title = ''
+        let author = ''
+        let productId = null
+        let matchMethod = null
+        if (products) {
+          if (barcode?.shopCode) {
+            const hit = resolveShopCode(barcode.shopCode, products)
+            if (hit) {
+              productId = hit.product.id
+              matchMethod = 'shopcode'
+              title = hit.product.title ?? ''
+              author = hit.product.author ?? ''
+              authoritative.set(matchNorm(hit.product.title), hit.product.id)
+            }
+          }
+          if (!productId) {
+            let hit = bestTitleMatchLines(lines, products, 95)
+            if (!hit && lines.some((l) => l.roman)) {
+              hit = bestTitleMatchLines(
+                lines.filter((l) => l.roman),
+                products,
+                85,
+              )
+            }
+            if (hit) {
+              productId = hit.product.id
+              matchMethod = 'title'
+              title = hit.product.title ?? ''
+              author = hit.product.author ?? ''
+            }
+          }
+        }
+        if (!title) title = pickTitleFromLines(lines)
+
+        const isbn = barcode?.isbn || findIsbn(lines)
+        const blurb = position === 'back' ? blurbFromLines(lines, title) : ''
+
+        const ocr = { position, title, author, isbn, priceText, price, blurb }
+        state.setImage(entry.sha, { status: 'ocr_done', ocr, productId, matchMethod, error: null })
         state.save()
         processed++
-        progress.log(
-          `${label} → cropped ${width}x${height} → ${ocr.position ?? 'unknown'} "${ocr.title}" ${price != null ? `₹${price}` : 'no-price'} ${isbn ? 'isbn-ok' : 'no-isbn'}`,
-        )
+        const bits = [
+          position,
+          barcode?.shopCode ? `code ${barcode.shopCode}` : null,
+          isbn ? `isbn ${isbn}` : null,
+          price != null ? `₹${price}` : null,
+          productId ? `→ ${productId}` : null,
+          `"${title}"`,
+        ].filter(Boolean)
+        progress.log(`${label} → ${bits.join(' ')}`)
         progress.step()
       } catch (e) {
         const error = `ocr: ${e.message}`
@@ -240,6 +378,20 @@ async function run({ folder, dryRun, limit, state, retryFailed, progress }) {
         progress.log(`${label} → FAILED ${error}`)
         progress.step({ ok: false })
       }
+    }
+
+    if (authoritative.size > 0) {
+      for (const r of ready) {
+        const img = r.entry
+        if (img.matchMethod === 'title' && img.productId && img.ocr?.title) {
+          const authId = authoritative.get(matchNorm(img.ocr.title))
+          if (authId && authId !== img.productId) {
+            state.setImage(img.sha, { productId: authId })
+            progress.log(`${img.file} → product id aligned to barcode-resolved ${authId}`)
+          }
+        }
+      }
+      state.save()
     }
   } else {
     progress.schedule([{ phase: 'match', total: 0 }])

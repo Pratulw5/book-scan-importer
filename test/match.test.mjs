@@ -4,6 +4,12 @@ import {
   levenshtein,
   titleScore,
   parsePrice,
+  matchPrice,
+  priceFromLines,
+  blurbFromLines,
+  classifyBarcodes,
+  bestTitleMatch,
+  bestTitleMatchLines,
   isValidIsbn,
   scoreCandidate,
   rankBooks,
@@ -254,5 +260,153 @@ describe('decideUnavailable', () => {
       score: 0,
       reason: 'database unavailable — match manually',
     })
+  })
+})
+
+describe('matchPrice', () => {
+  it('returns value and the matched text', () => {
+    expect(matchPrice('MRP ₹ 200.00')).toEqual({ value: 200, text: '₹ 200.00' })
+    expect(matchPrice('no price')).toBeNull()
+  })
+})
+
+describe('priceFromLines', () => {
+  it('takes the first confident in-range price', () => {
+    const lines = [
+      { text: 'some headline', conf: 90 },
+      { text: '₹ 499.00', conf: 88 },
+      { text: '₹ 99999', conf: 88 },
+    ]
+    expect(priceFromLines(lines)).toEqual({ price: 499, priceText: '₹ 499.00' })
+  })
+  it('skips low-confidence lines', () => {
+    expect(priceFromLines([{ text: '₹ 499', conf: 10 }])).toEqual({ price: null, priceText: '' })
+  })
+  it('rejects out-of-range prices', () => {
+    expect(priceFromLines([{ text: '₹ 99999', conf: 90 }])).toEqual({ price: null, priceText: '' })
+    expect(priceFromLines([{ text: '₹ 0', conf: 90 }])).toEqual({ price: null, priceText: '' })
+  })
+  it('empty input gives no price', () => {
+    expect(priceFromLines([])).toEqual({ price: null, priceText: '' })
+    expect(priceFromLines(null)).toEqual({ price: null, priceText: '' })
+  })
+})
+
+describe('blurbFromLines', () => {
+  it('picks the longest confident long line', () => {
+    const lines = [
+      { text: 'short', conf: 90 },
+      { text: 'x'.repeat(90), conf: 90 },
+      { text: 'y'.repeat(200), conf: 90 },
+    ]
+    expect(blurbFromLines(lines)).toBe('y'.repeat(200))
+  })
+  it('skips the title line', () => {
+    const title = 'A Title That Is Definitely Longer Than Eighty Characters For Testing Purposes'
+    expect(blurbFromLines([{ text: title, conf: 90 }], title)).toBe('')
+  })
+  it('returns empty when nothing long enough', () => {
+    expect(blurbFromLines([{ text: 'blurb', conf: 90 }])).toBe('')
+  })
+})
+
+describe('classifyBarcodes', () => {
+  const validIsbn13 = '9780306406157'
+  it('valid EAN-13 → isbn, 6 digits → shopCode', () => {
+    const r = classifyBarcodes([
+      { format: 'EAN_13', text: validIsbn13, valid: true },
+      { format: 'Code39', text: '175582', valid: true },
+    ])
+    expect(r).toEqual({ isbn: validIsbn13, shopCode: '175582' })
+  })
+  it('accepts the hyphenated format string zxing actually returns', () => {
+    const r = classifyBarcodes([
+      { format: 'EAN-13', text: validIsbn13, valid: true },
+      { format: 'Code 39', text: '175582', valid: true },
+    ])
+    expect(r).toEqual({ isbn: validIsbn13, shopCode: '175582' })
+  })
+  it('invalid EAN-13 checksum is not an isbn', () => {
+    const r = classifyBarcodes([{ format: 'EAN_13', text: '9780306406158', valid: false }])
+    expect(r.isbn).toBe('')
+  })
+  it('isbn format name also accepted', () => {
+    expect(classifyBarcodes([{ format: 'ISBN', text: validIsbn13 }]).isbn).toBe(validIsbn13)
+  })
+  it('non 6/13 digit codes are ignored', () => {
+    expect(classifyBarcodes([{ format: 'QRCode', text: 'hello world' }])).toEqual({ isbn: '', shopCode: '' })
+  })
+  it('empty input is safe', () => {
+    expect(classifyBarcodes(null)).toEqual({ isbn: '', shopCode: '' })
+  })
+})
+
+describe('bestTitleMatch', () => {
+  const products = [
+    { id: 'p1', title: 'MUSAFIR CAFE', author: 'DIVYA PRAKASH DUBEY', mrp: 299, isbn: '' },
+    { id: 'p2', title: 'THE ART OF FIELDING', author: '', mrp: 500, isbn: '' },
+    { id: 'p3', title: 'FILLER TITLE', author: '', mrp: 100, isbn: '' },
+  ]
+
+  it('exact normalized match scores 100', () => {
+    const m = bestTitleMatch('Musafir Cafe!', products)
+    expect(m).toMatchObject({ exact: true, score: 100 })
+    expect(m.product.id).toBe('p1')
+  })
+  it('close OCR line matches fuzzily', () => {
+    const m = bestTitleMatch('THE ART OF FIELDNG', products, 90)
+    expect(m).not.toBeNull()
+    expect(m.product.id).toBe('p2')
+  })
+  it('unrelated line returns null', () => {
+    expect(bestTitleMatch('completely unrelated gibberish text here', products, 95)).toBeNull()
+  })
+  it('below minScore returns null', () => {
+    expect(bestTitleMatch('MUSAFR CAF', products, 99)).toBeNull()
+  })
+  it('empty or too-short input returns null', () => {
+    expect(bestTitleMatch('', products)).toBeNull()
+    expect(bestTitleMatch('ab', products)).toBeNull()
+    expect(bestTitleMatch('anything', [])).toBeNull()
+    expect(bestTitleMatch('anything', null)).toBeNull()
+  })
+})
+
+describe('bestTitleMatchLines', () => {
+  const products = [{ id: 'p1', title: 'MUSAFIR CAFE', author: '', mrp: 299, isbn: '' }]
+  it('finds the matching line and reports it', () => {
+    const lines = [
+      { text: 'some noise', conf: 95 },
+      { text: 'MUSAFIR CAFE', conf: 87 },
+    ]
+    const m = bestTitleMatchLines(lines, products)
+    expect(m.product.id).toBe('p1')
+    expect(m.line).toBe('MUSAFIR CAFE')
+  })
+  it('ignores low-confidence lines', () => {
+    expect(bestTitleMatchLines([{ text: 'MUSAFIR CAFE', conf: 10 }], products)).toBeNull()
+  })
+  it('no match → null', () => {
+    expect(bestTitleMatchLines([{ text: 'zzz qqq www', conf: 90 }], products)).toBeNull()
+  })
+  it('matches via the romanised field for Devanagari lines', () => {
+    const hit = bestTitleMatchLines(
+      [{ text: 'श्रीमद् भागवत पुराण', roman: 'Srimad Bhagavata Purana', conf: 76 }],
+      [{ id: 'p7', title: 'SRIMAD BHAGAVATA PURANA', author: '', mrp: 150, isbn: '' }],
+    )
+    expect(hit).not.toBeNull()
+    expect(hit.product.id).toBe('p7')
+    expect(hit.line).toBe('Srimad Bhagavata Purana')
+  })
+  it('matches transliteration spelling variants at the default threshold', () => {
+    const lines = [{ text: 'श्रीमद् भागवत पुराण', roman: 'Srimad Bhagavata Purana', conf: 76 }]
+    const products = [{ id: 'p8', title: 'SHRIMAD BHAGWAT PURAN', author: '', mrp: 150, isbn: '' }]
+    expect(bestTitleMatchLines(lines, products, 95)?.product.id).toBe('p8')
+  })
+  it('the relaxed tier (85) catches edition-suffix titles the strict tier rejects', () => {
+    const lines = [{ text: 'पंख', roman: 'Wings of Fire 2', conf: 80 }]
+    const products = [{ id: 'p9', title: 'WINGS OF FIRE', author: '', mrp: 450, isbn: '' }]
+    expect(bestTitleMatchLines(lines, products, 95)).toBeNull()
+    expect(bestTitleMatchLines(lines, products, 85)?.product.id).toBe('p9')
   })
 })

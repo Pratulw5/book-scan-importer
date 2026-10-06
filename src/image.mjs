@@ -25,6 +25,7 @@ async function runSamCrop(inputPath, outputPath) {
     let stderr = ''
     proc.stdout.on('data', d => stdout += d)
     proc.stderr.on('data', d => stderr += d)
+    proc.on('error', reject)
     proc.on('close', code => {
       if (code === 0) {
         try { resolve(JSON.parse(stdout.trim())) }
@@ -37,36 +38,60 @@ async function runSamCrop(inputPath, outputPath) {
 }
 
 export async function cropWhiteBg(buffer) {
-  // Write buffer to temp file for SAM
   const tmpDir = path.join(PROJECT_ROOT, 'job', 'tmp')
   fs.mkdirSync(tmpDir, { recursive: true })
-  await sharp(buffer).rotate().jpeg({ quality: 95 }).toFile(path.join(tmpDir, 'sam-input.jpg'))
-  
-  const inputPath = path.join(tmpDir, 'sam-input.jpg')
-  const outputPath = path.join(tmpDir, 'sam-output.jpg')
-  
-  let croppedData, croppedInfo
+  const id = `${process.pid}-${crypto.randomUUID()}`
+  const inputPath = path.join(tmpDir, `sam-input-${id}.jpg`)
+  const outputPath = path.join(tmpDir, `sam-output-${id}.jpg`)
+
   try {
-    await runSamCrop(inputPath, outputPath)
-    croppedData = await sharp(outputPath).jpeg({ quality: 90 }).toBuffer()
-    const info = await sharp(outputPath).metadata()
-    croppedInfo = { width: info.width, height: info.height }
-  } catch (e) {
-    console.warn(`SAM crop failed, falling back to trim: ${e.message}`)
-    const result = await sharp(buffer)
-      .rotate()
-      .trim({ threshold: 150 })
-      .jpeg({ quality: 90 })
-      .toBuffer({ resolveWithObject: true })
-    croppedData = result.data
-    croppedInfo = result.info
+    await sharp(buffer).rotate().jpeg({ quality: 95 }).toFile(inputPath)
+
+    let croppedData, croppedInfo
+    if (process.env.BSI_SKIP_SAM === '1') {
+      const result = await sharp(buffer)
+        .rotate()
+        .trim({ threshold: 150 })
+        .jpeg({ quality: 90 })
+        .toBuffer({ resolveWithObject: true })
+      croppedData = result.data
+      croppedInfo = result.info
+    } else {
+      try {
+        await runSamCrop(inputPath, outputPath)
+        if (!fs.existsSync(outputPath)) throw new Error('SAM exited without writing an output file')
+        croppedData = await sharp(outputPath).jpeg({ quality: 90 }).toBuffer()
+        const info = await sharp(outputPath).metadata()
+        croppedInfo = { width: info.width, height: info.height }
+      } catch (e) {
+        console.warn(`SAM crop failed, falling back to trim: ${e.message}`)
+        const result = await sharp(buffer)
+          .rotate()
+          .trim({ threshold: 150 })
+          .jpeg({ quality: 90 })
+          .toBuffer({ resolveWithObject: true })
+        croppedData = result.data
+        croppedInfo = result.info
+      }
+    }
+
+    if (croppedInfo.width > croppedInfo.height) {
+      const rotated = await sharp(croppedData).rotate(90).jpeg({ quality: 90 }).toBuffer({ resolveWithObject: true })
+      return { buffer: rotated.data, width: rotated.info.width, height: rotated.info.height }
+    }
+    return { buffer: croppedData, width: croppedInfo.width, height: croppedInfo.height }
+  } finally {
+    fs.rmSync(inputPath, { force: true })
+    fs.rmSync(outputPath, { force: true })
   }
-  
-  if (croppedInfo.width > croppedInfo.height) {
-    const rotated = await sharp(croppedData).rotate(90).jpeg({ quality: 90 }).toBuffer({ resolveWithObject: true })
-    return { buffer: rotated.data, width: rotated.info.width, height: rotated.info.height }
-  }
-  return { buffer: croppedData, width: croppedInfo.width, height: croppedInfo.height }
+}
+
+export async function toOriginalJpeg(buffer, { maxDimension = 2048, quality = 85 } = {}) {
+  return sharp(buffer)
+    .rotate()
+    .resize({ width: maxDimension, height: maxDimension, fit: 'inside', withoutEnlargement: true })
+    .jpeg({ quality })
+    .toBuffer()
 }
 
 export async function buildVariants(buffer) {

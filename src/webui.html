@@ -202,6 +202,16 @@
     color: var(--faint);
     text-align: center;
   }
+  .thumb .src-toggle {
+    margin-top: 6px;
+    width: 100%;
+    font-size: 11px;
+    padding: 4px 6px;
+  }
+  .thumb .src-toggle.active {
+    border-color: var(--warn, #b8860b);
+    color: var(--warn, #b8860b);
+  }
   .ocr { padding: 18px; min-width: 0; }
   .ocr h2 {
     margin: 0 0 2px;
@@ -523,7 +533,7 @@
     </div>
     <div class="head-right">
       <div class="pills">
-        <span class="pill" id="pill-llm"><span class="dot"></span><span>LLM …</span></span>
+        <span class="pill" id="pill-ocr"><span class="dot"></span><span>OCR …</span></span>
         <span class="pill" id="pill-db"><span class="dot"></span><span>DB …</span></span>
         <span class="pill" id="pill-r2"><span class="dot"></span><span>R2 …</span></span>
       </div>
@@ -884,7 +894,8 @@
     document.getElementById('folder').textContent = state.folder || 'unknown folder';
     document.getElementById('dry-run-badge').hidden = !state.dryRun;
 
-    setPill('pill-llm', !!state.lms.ok, state.lms.ok ? 'LLM ' + (state.lms.model || 'ready') : 'LLM offline', false);
+    var ocrOk = !!(state.ocr && state.ocr.ok);
+    setPill('pill-ocr', ocrOk, ocrOk ? 'OCR ready' : 'OCR tools missing', true);
     setPill('pill-db', !!state.db.ok, state.db.ok ? 'DB ok' : 'DB down', false);
     setPill('pill-r2', !!state.r2.ok, state.r2.ok ? 'R2 ok' : 'R2 missing', true);
 
@@ -962,17 +973,43 @@
 
   function thumbnail(book, which) {
     var sha = which === 'front' ? book.front : book.back;
+    var imgs = state.images || {};
+    var entry = sha ? imgs[sha] : null;
     var fig = h('div', { class: 'thumb' });
     if (sha) {
-      var img = h('img', { src: '/img/' + sha, alt: which + ' cover of ' + book.title, loading: 'lazy' });
+      var src = '/img/' + sha + (entry && entry.useOriginal ? '?src=orig' : '');
+      var img = h('img', { src: src, alt: which + ' cover of ' + book.title, loading: 'lazy' });
       img.addEventListener('error', function () {
         img.outerHTML = '<div class="no-cover">image unavailable</div>';
       });
       fig.appendChild(img);
+      var usingOriginal = !!(entry && entry.useOriginal);
+      var toggle = h('button', {
+        class: 'small src-toggle' + (usingOriginal ? ' active' : ''),
+        type: 'button',
+        text: usingOriginal ? 'Using original ✓' : 'Use original'
+      });
+      toggle.addEventListener('click', function () {
+        var next = !usingOriginal;
+        toggle.disabled = true;
+        api('/api/image/' + sha + '/source', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source: next ? 'original' : 'crop' })
+        }).then(function () {
+          if (entry) entry.useOriginal = next;
+          render();
+        }).catch(function (e) {
+          toggle.disabled = false;
+          alert('could not switch image: ' + e.message);
+        });
+      });
+      fig.appendChild(toggle);
     } else {
       fig.appendChild(h('div', { class: 'no-cover', text: 'no back cover' }));
     }
-    fig.appendChild(h('div', { class: 'pos', text: positionFor(book, which) }));
+    var code = entry && entry.barcode && entry.barcode.shopCode ? ' · ' + entry.barcode.shopCode : '';
+    fig.appendChild(h('div', { class: 'pos', text: positionFor(book, which) + code }));
     return fig;
   }
 

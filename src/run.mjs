@@ -100,7 +100,7 @@ async function main() {
     process.exit(1)
   }
 
-  const { ok, errors, config } = loadConfig({ needLlm: true, needDb: false, needR2: false })
+  const { ok, errors, config } = loadConfig({ needDb: false, needR2: false })
   if (!ok) {
     console.error('Missing required configuration:')
     for (const e of errors) console.error(`  - ${e}`)

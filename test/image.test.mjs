@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import sharp from 'sharp'
-import { cropWhiteBg, buildVariants, safeName, slugFromTitle } from '../src/image.mjs'
+
+process.env.BSI_SKIP_SAM = '1'
+
+const { cropWhiteBg, buildVariants, safeName, slugFromTitle } = await import('../src/image.mjs')
 
 async function makeScan(width, height, rect) {
   const white = sharp({
