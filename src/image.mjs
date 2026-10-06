@@ -5,6 +5,7 @@ import sharp from 'sharp'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { normalize } from './match.mjs'
+import { pythonLaunch } from './py.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = path.resolve(__dirname, '..')
@@ -17,7 +18,8 @@ export function sha256(buf) {
 
 async function runSamCrop(inputPath, outputPath) {
   return new Promise((resolve, reject) => {
-    const proc = spawn('python3', [SAM_SCRIPT, inputPath, outputPath, SAM_MODEL], {
+    const { cmd, pre } = pythonLaunch()
+    const proc = spawn(cmd, [...pre, SAM_SCRIPT, inputPath, outputPath, SAM_MODEL], {
       cwd: PROJECT_ROOT,
       timeout: 180000,
     })

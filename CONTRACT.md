@@ -125,7 +125,7 @@ Two outputs written per image:
 
 ## Barcode + OCR (local python, no LLM)
 
-- `src/py.mjs` `runPy(script, items, { timeout })`: writes `job/tmp/<name>-<rand>.json`, spawns `python3 <script> in out`, reads result, always unlinks temp files, captures stderr, throws with stderr snippet on failure or non-zero exit.
+- `src/py.mjs` `pythonLaunch()`: returns `{ cmd, pre }` — `py -3` on Windows, `python3` elsewhere, overridable via `PYTHON_BIN`. `runPy(script, items, { timeout })`: writes `job/tmp/<name>-<rand>.json`, spawns `<pythonLaunch> <script> in out`, reads result, always unlinks temp files, captures stderr, throws with stderr snippet on failure or non-zero exit.
 - `read_barcodes.py` — batch; per item tries original → 2× upscale → adaptive threshold, × 4 rotations via zxingcpp `read_barcodes`; stops at first hit; returns `[{ ok, barcodes: [{ format, text, valid }], error }]`.
 - `ocr_batch.py` — batch; EasyOCR reader with `['hi','en']`, `gpu=False`, one Reader per run; lines sorted top→bottom: `[{ text, conf (0..100), box: [x, y, w, h], roman? }]`. `roman` is added when `text` is Devanagari: transliterated via `indic-transliteration` (IAST) then ASCII-folded and title-cased (`श्रीमद् भागवत पुराण` → `Srimad Bhagavata Purana`).
 - `src/barcode.mjs` `readBarcodes(images)` → `Map<id, barcodes[]>`; `src/ocr.mjs` `runOcr(images)` → `Map<id, lines[]>`.
@@ -218,7 +218,7 @@ Two outputs written per image:
   - `GET /` → html; `GET /health` → `{ ok: true }`
   - `GET /img/:sha?src=orig` → `job/crops/<sha>.jpg`, or `job/originals/<sha>.jpg` when `src=orig` (cross-fallback if missing)
   - `GET /api/state` → `{ folder, dryRun, ocr: { ok, error? }, db: { ok }, r2: { ok }, counts: { matched, review, unmatched, failedImages, committed }, books: BookState[], images: ImageState[] }`
-    - `ocr.ok` = python scripts present and `python3 -c "import zxingcpp, cv2, easyocr"` succeeds (memoised per process)
+    - `ocr.ok` = python scripts present and `pythonLaunch() -c "import zxingcpp, cv2, easyocr, indic_transliteration"` succeeds (memoised per process)
   - `POST /api/image/:sha/source` body `{ source: "crop" | "original" }` → sets `useOriginal` on the image, saves; 404 for unknown sha
   - `POST /api/book/:key/confirm` body `{ productId }` → sets `chosenProductId`, status `matched`, saves
   - `POST /api/book/:key/dismiss` → `dismissed = true`

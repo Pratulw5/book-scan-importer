@@ -5,6 +5,7 @@ import { createReadStream, existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { getProgress } from './progress.mjs'
+import { pythonLaunch } from './py.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const defaultJobDir = path.resolve(here, '..', 'job')
@@ -95,7 +96,8 @@ function defaultChecks() {
             (f) => !existsSync(path.join(root, f)),
           )
           if (missing.length) return { ok: false, missing }
-          const probe = spawnSync('python3', ['-c', 'import zxingcpp, cv2, easyocr, indic_transliteration'], { timeout: 60000 })
+          const { cmd: pyCmd, pre: pyPre } = pythonLaunch()
+          const probe = spawnSync(pyCmd, [...pyPre, '-c', 'import zxingcpp, cv2, easyocr, indic_transliteration'], { timeout: 60000 })
           if (probe.status !== 0) {
             return { ok: false, error: String(probe.stderr ?? '').slice(-300) || 'python imports failed' }
           }

@@ -7,6 +7,13 @@ import { fileURLToPath } from 'node:url'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 export const PROJECT_ROOT = path.resolve(__dirname, '..')
 
+export function pythonLaunch() {
+  const env = process.env.PYTHON_BIN && process.env.PYTHON_BIN.trim()
+  if (env) return { cmd: env, pre: [] }
+  if (process.platform === 'win32') return { cmd: 'py', pre: ['-3'] }
+  return { cmd: 'python3', pre: [] }
+}
+
 export async function runPy(script, items, { timeout = 600000 } = {}) {
   if (!items || items.length === 0) return []
   const tmpDir = path.join(PROJECT_ROOT, 'job', 'tmp')
@@ -18,7 +25,8 @@ export async function runPy(script, items, { timeout = 600000 } = {}) {
   try {
     fs.writeFileSync(listPath, JSON.stringify({ items }))
     await new Promise((resolve, reject) => {
-      const proc = spawn('python3', [path.join(PROJECT_ROOT, script), listPath, outPath], {
+      const { cmd, pre } = pythonLaunch()
+      const proc = spawn(cmd, [...pre, path.join(PROJECT_ROOT, script), listPath, outPath], {
         cwd: PROJECT_ROOT,
         timeout,
       })
