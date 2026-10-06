@@ -768,6 +768,10 @@
   async function loadState() {
     try {
       state = await api('/api/state');
+      state.bySha = {};
+      (state.images || []).forEach(function (im) {
+        if (im && im.sha) state.bySha[im.sha] = im;
+      });
       lastUpdated = Date.now();
       if (state.folder && !choosingFolder) {
         document.getElementById('folder-picker').hidden = true;
@@ -953,14 +957,14 @@
   }
 
   function priceTextFor(book) {
-    var imgs = state.images || {};
+    var imgs = state.bySha || {};
     var front = book.front ? imgs[book.front] : null;
     var back = book.back ? imgs[book.back] : null;
     return (front && front.ocr && front.ocr.priceText) || (back && back.ocr && back.ocr.priceText) || '';
   }
 
   function positionFor(book, which) {
-    var imgs = state.images || {};
+    var imgs = state.bySha || {};
     var img = which === 'front' ? (book.front ? imgs[book.front] : null) : (book.back ? imgs[book.back] : null);
     if (img && img.ocr && img.ocr.position) return img.ocr.position;
     return which;
@@ -973,7 +977,7 @@
 
   function thumbnail(book, which) {
     var sha = which === 'front' ? book.front : book.back;
-    var imgs = state.images || {};
+    var imgs = state.bySha || {};
     var entry = sha ? imgs[sha] : null;
     var fig = h('div', { class: 'thumb' });
     if (sha) {
@@ -997,7 +1001,8 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ source: next ? 'original' : 'crop' })
         }).then(function () {
-          if (entry) entry.useOriginal = next;
+          var live = (state.bySha || {})[sha] || entry;
+          if (live) live.useOriginal = next;
           render();
         }).catch(function (e) {
           toggle.disabled = false;
